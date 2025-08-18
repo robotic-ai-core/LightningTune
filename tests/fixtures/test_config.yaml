@@ -1,0 +1,33 @@
+model:
+  class_path: tests.fixtures.dummy_model.DummyModel
+  init_args:
+    input_dim: 10
+    hidden_dim: 32
+    output_dim: 2
+    learning_rate: 0.001
+    dropout: 0.1
+    optimizer_type: adam
+
+data:
+  class_path: tests.fixtures.dummy_model.DummyDataModule
+  init_args:
+    batch_size: 32
+    num_samples: 100
+    input_dim: 10
+    num_classes: 2
+    val_split: 0.2
+
+trainer:
+  max_epochs: 5
+  accelerator: cpu
+  devices: 1
+  enable_checkpointing: true
+  enable_progress_bar: false
+  enable_model_summary: false
+  logger: false
+  callbacks:
+    - class_path: pytorch_lightning.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val_loss
+        mode: min
+        save_top_k: 1

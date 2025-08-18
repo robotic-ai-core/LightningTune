@@ -1,0 +1,11 @@
+data:
+  batch_size: 32
+  num_samples: 500
+model:
+  dropout: 0.1
+  hidden_size: 32
+  learning_rate: 0.00011961851855142487
+trainer:
+  enable_progress_bar: false
+  logger: false
+  max_epochs: 3

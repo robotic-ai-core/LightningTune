@@ -1,0 +1,13 @@
+data:
+  batch_size: 32
+  num_samples: 1000
+model:
+  dropout: 0.47632842656030816
+  hidden_size: 48
+  learning_rate: 0.0033708276409588275
+  optimizer_type: rmsprop
+trainer:
+  enable_checkpointing: false
+  enable_progress_bar: false
+  logger: false
+  max_epochs: 5
