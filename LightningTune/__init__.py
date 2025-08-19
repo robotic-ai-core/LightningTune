@@ -29,6 +29,7 @@ try:
         CompositeSearchSpace,
         DynamicSearchSpace,
     )
+    from .optuna.search_space_dependent import DependentSearchSpace
     from .optuna.callbacks import (
         OptunaPruningCallback,
         OptunaCheckpointCallback,
@@ -62,6 +63,7 @@ except ImportError as e:
     ConditionalSearchSpace = None
     CompositeSearchSpace = None
     DynamicSearchSpace = None
+    DependentSearchSpace = None
     OptunaPruningCallback = None
     OptunaCheckpointCallback = None
     OptunaProgressCallback = None
@@ -93,6 +95,7 @@ __all__ = [
     "ConditionalSearchSpace",
     "CompositeSearchSpace",
     "DynamicSearchSpace",
+    "DependentSearchSpace",
     
     # Callbacks
     "OptunaPruningCallback",

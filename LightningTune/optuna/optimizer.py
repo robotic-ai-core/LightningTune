@@ -55,6 +55,7 @@ class OptunaDrivenOptimizer:
         metric: str = "val_loss",
         verbose: bool = True,
         wandb_project: Optional[str] = None,  # WandB project name for logging
+        upload_checkpoints: bool = False,  # Whether to upload checkpoint artifacts to WandB
     ):
         """
         Initialize the optimizer with direct Optuna components.
@@ -83,6 +84,7 @@ class OptunaDrivenOptimizer:
             metric: Metric to optimize
             verbose: Whether to print progress
             wandb_project: Optional WandB project name for experiment tracking
+            upload_checkpoints: Whether to upload checkpoint artifacts to WandB (saves space if False)
             
         Example:
             >>> from optuna.samplers import TPESampler
@@ -117,6 +119,7 @@ class OptunaDrivenOptimizer:
         self.metric = metric
         self.verbose = verbose
         self.wandb_project = wandb_project
+        self.upload_checkpoints = upload_checkpoints
         
         # Setup experiment directory
         self._temp_dir = None
@@ -248,6 +251,7 @@ class OptunaDrivenOptimizer:
                     id=f"{self.study_name}_trial_{trial.number}",
                     config=config,  # Log the full config including hyperparameters
                     reinit=True,  # Allow reinit for multiple trials
+                    log_model=self.upload_checkpoints,  # Control checkpoint uploads
                 )
                 trainer_config.pop('logger', None)  # Remove any existing logger config
             
