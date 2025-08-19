@@ -16,6 +16,7 @@ from .search_space import (
     CompositeSearchSpace,
     DynamicSearchSpace,
 )
+from .search_space_dependent import DependentSearchSpace
 from .callbacks import (
     OptunaPruningCallback,
     OptunaCheckpointCallback,
@@ -57,6 +58,7 @@ __all__ = [
     "ConditionalSearchSpace",
     "CompositeSearchSpace",
     "DynamicSearchSpace",
+    "DependentSearchSpace",
     # Callbacks
     "OptunaPruningCallback",
     "OptunaCheckpointCallback",
