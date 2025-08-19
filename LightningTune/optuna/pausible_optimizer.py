@@ -350,6 +350,9 @@ class PausibleOptunaOptimizer:
         opt_kwargs = self.optimizer_kwargs.copy()
         opt_kwargs.update(kwargs)
         
+        # Extract direction to avoid duplicate argument
+        direction = opt_kwargs.pop("direction", "minimize")
+        
         # Create optimizer
         optimizer = OptunaDrivenOptimizer(
             base_config=self.base_config,
@@ -360,7 +363,7 @@ class PausibleOptunaOptimizer:
             sampler=study.sampler,  # Use study's sampler
             pruner=study.pruner,     # Use study's pruner
             study_name=self.study_name,
-            direction=opt_kwargs.get("direction", "minimize"),
+            direction=direction,
             n_trials=1,  # We'll run one at a time for checkpointing
             callbacks=callbacks,
             wandb_project=self.wandb_project,
