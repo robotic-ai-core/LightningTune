@@ -54,6 +54,7 @@ class OptunaDrivenOptimizer:
         save_checkpoints: bool = True,
         metric: str = "val_loss",
         verbose: bool = True,
+        wandb_project: Optional[str] = None,  # WandB project name for logging
     ):
         """
         Initialize the optimizer with direct Optuna components.
@@ -81,6 +82,7 @@ class OptunaDrivenOptimizer:
             save_checkpoints: Whether to save model checkpoints
             metric: Metric to optimize
             verbose: Whether to print progress
+            wandb_project: Optional WandB project name for experiment tracking
             
         Example:
             >>> from optuna.samplers import TPESampler
@@ -114,6 +116,7 @@ class OptunaDrivenOptimizer:
         self.save_checkpoints = save_checkpoints
         self.metric = metric
         self.verbose = verbose
+        self.wandb_project = wandb_project
         
         # Setup experiment directory
         self._temp_dir = None
@@ -234,6 +237,20 @@ class OptunaDrivenOptimizer:
             # Remove any conflicting parameters
             trainer_config.pop('callbacks', None)
             
+            # Setup WandB logger if requested
+            logger = None
+            if self.wandb_project:
+                from lightning.pytorch.loggers import WandbLogger
+                # Create WandB logger for this trial
+                logger = WandbLogger(
+                    project=self.wandb_project,
+                    name=f"trial_{trial.number}",
+                    id=f"{self.study_name}_trial_{trial.number}",
+                    config=config,  # Log the full config including hyperparameters
+                    reinit=True,  # Allow reinit for multiple trials
+                )
+                trainer_config.pop('logger', None)  # Remove any existing logger config
+            
             # Use progress bar if requested, but configure it properly
             if trainer_config.get('enable_progress_bar', True):
                 from lightning.pytorch.callbacks import RichProgressBar
@@ -244,6 +261,7 @@ class OptunaDrivenOptimizer:
             
             trainer = Trainer(
                 callbacks=callbacks,
+                logger=logger,
                 **trainer_config
             )
             
