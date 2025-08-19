@@ -214,6 +214,9 @@ class OptunaDrivenOptimizer:
                 pruning_callback = OptunaPruningCallback(trial, monitor=self.metric)
                 callbacks.append(pruning_callback)
             
+            # Create trainer config
+            trainer_config = config.get('trainer', {})
+            
             # Add checkpoint callback if requested
             if self.save_checkpoints:
                 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -225,9 +228,9 @@ class OptunaDrivenOptimizer:
                     save_top_k=1,
                 )
                 callbacks.append(checkpoint_callback)
+                # Ensure checkpointing is enabled if we're adding a checkpoint callback
+                trainer_config['enable_checkpointing'] = True
             
-            # Create trainer
-            trainer_config = config.get('trainer', {})
             # Remove any conflicting parameters
             trainer_config.pop('callbacks', None)
             trainer_config.pop('enable_progress_bar', None)
