@@ -364,7 +364,7 @@ class OptunaDrivenOptimizer:
             raise ValueError("No optimization has been run yet")
         
         config = self.base_config.copy()
-        return self._merge_configs(config, self.best_trial.params)
+        return apply_dotted_updates(config, self.best_trial.params)
     
     def resume(self) -> optuna.Study:
         """Resume optimization from a previous run."""
