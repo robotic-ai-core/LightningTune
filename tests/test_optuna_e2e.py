@@ -18,8 +18,8 @@ import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
-from pytorch_lightning import LightningDataModule
+import lightning as L
+from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 
@@ -82,7 +82,7 @@ class DummyDataModule(LightningDataModule):
         )
 
 
-class DummyLightningModule(pl.LightningModule):
+class DummyLightningModule(L.LightningModule):
     """Simple Lightning module for testing."""
     
     def __init__(self, learning_rate=0.001, hidden_size=64, dropout=0.1):

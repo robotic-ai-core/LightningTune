@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
+import lightning as L
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from torchvision.datasets import FashionMNIST
@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from LightningTune import OptunaDrivenOptimizer, SimpleSearchSpace
 
 
-class FashionMNISTModel(pl.LightningModule):
+class FashionMNISTModel(L.LightningModule):
     """Simple CNN for Fashion-MNIST with tunable hyperparameters."""
     
     def __init__(
@@ -107,7 +107,7 @@ class FashionMNISTModel(pl.LightningModule):
             return torch.optim.AdamW(self.parameters(), lr=self.hparams.learning_rate)
 
 
-class FashionMNISTDataModule(pl.LightningDataModule):
+class FashionMNISTDataModule(L.LightningDataModule):
     """DataModule for Fashion-MNIST with tunable batch size."""
     
     def __init__(self, batch_size: int = 32, data_dir: str = "./data"):

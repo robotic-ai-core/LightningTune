@@ -13,8 +13,8 @@ import optuna
 from optuna.samplers import TPESampler, RandomSampler, CmaEsSampler
 from optuna.pruners import MedianPruner, HyperbandPruner, SuccessiveHalvingPruner, NopPruner
 
-import pytorch_lightning as pl
-from pytorch_lightning import LightningModule
+import lightning as L
+from lightning.pytorch import LightningModule
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
