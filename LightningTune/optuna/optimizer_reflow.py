@@ -219,6 +219,7 @@ class ReflowOptunaDrivenOptimizer:
                 trainer_config['enable_progress_bar'] = True  # Keep Lightning's progress bar for HPO
             
             # Setup WandB logger if requested
+            wandb_logger = None
             if self.wandb_project:
                 from lightning.pytorch.loggers import WandbLogger
                 wandb_logger = WandbLogger(
@@ -227,6 +228,7 @@ class ReflowOptunaDrivenOptimizer:
                     config=config,
                     log_model=self.upload_checkpoints,
                 )
+                # Add to trainer_config for both Reflow and vanilla
                 trainer_config['logger'] = wandb_logger
             
             if self.use_reflow:
@@ -246,16 +248,21 @@ class ReflowOptunaDrivenOptimizer:
                         data_args = data_config
                     
                     # Create LightningReflow instance
+                    # Note: logger is passed through trainer_defaults
                     reflow = LightningReflow(
                         model_class=self.model_class,
                         datamodule_class=self.datamodule_class,
                         model_init_args=model_args,
                         datamodule_init_args=data_args,
-                        trainer_defaults=trainer_config,
+                        trainer_defaults=trainer_config,  # Includes logger
                         callbacks=callbacks,
                         seed_everything=config.get('seed_everything', None),
-                        # Pass the full config for environment setup
-                        config_overrides=config,
+                        # Don't pass full config as overrides - it has non-primitive values
+                        # Only pass the environment-related configs
+                        config_overrides={
+                            'environment': config.get('environment', {}),
+                            'compile': config.get('compile', {})
+                        },
                         auto_configure_logging=False  # We handle logging ourselves
                     )
                     
@@ -276,9 +283,11 @@ class ReflowOptunaDrivenOptimizer:
                     # Optionally fall back to vanilla Lightning
                     if self.verbose:
                         logger.info("Falling back to vanilla Lightning")
+                    # Logger should already be in trainer_config
                     return self._run_vanilla_lightning(config, callbacks, trainer_config, trial)
             else:
                 # Use vanilla Lightning (original implementation)
+                # Logger should already be in trainer_config from above
                 return self._run_vanilla_lightning(config, callbacks, trainer_config, trial)
         
         return objective
