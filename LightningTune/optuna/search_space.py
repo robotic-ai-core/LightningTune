@@ -61,22 +61,38 @@ class SimpleSearchSpace(OptunaSearchSpace):
             "model.init_args.hidden_size": ("categorical", [128, 256, 512]),
             "data.init_args.batch_size": ("int", 16, 128, 8),  # min, max, step
         })
+        
+        # With dependencies (parameters that reference other parameters):
+        search_space = SimpleSearchSpace(
+            param_dict={
+                "latent_dim": ("categorical", [62, 126, 190, 254]),
+                "model.init_args.learning_rate": ("loguniform", 1e-5, 1e-3),
+            },
+            dependencies={
+                "model.init_args.transformer_hparams.latent_dim": "latent_dim",
+                "model.init_args.adapter_hparams.internal_latent_dim": "latent_dim",
+            }
+        )
     """
     
-    def __init__(self, param_dict: Dict[str, tuple]):
+    def __init__(self, param_dict: Dict[str, tuple], dependencies: Optional[Dict[str, str]] = None):
         """
         Initialize search space with parameter dictionary.
         
         Args:
             param_dict: Dictionary mapping parameter names to tuples defining
                        the parameter type and range/choices
+            dependencies: Optional dictionary mapping dependent parameter names
+                         to their source parameter names
         """
         self.param_dict = param_dict
+        self.dependencies = dependencies or {}
     
     def suggest_params(self, trial: optuna.Trial) -> Dict[str, Any]:
         """Suggest parameters based on the defined ranges."""
         params = {}
         
+        # First, suggest all primary parameters
         for name, spec in self.param_dict.items():
             param_type = spec[0]
             
@@ -98,12 +114,28 @@ class SimpleSearchSpace(OptunaSearchSpace):
             
             params[name] = value
         
-        return params
+        # Then apply dependencies
+        for dependent_name, source_name in self.dependencies.items():
+            if source_name in params:
+                params[dependent_name] = params[source_name]
+            else:
+                raise ValueError(f"Dependency source '{source_name}' not found in params")
+        
+        # Remove intermediate parameters that were only used for dependencies
+        # (keep only params that start with model., data., trainer., etc.)
+        final_params = {}
+        for key, value in params.items():
+            if "." in key or key not in self.dependencies.values():
+                final_params[key] = value
+        
+        return final_params
     
     @property
     def param_names(self) -> List[str]:
-        """Return list of parameter names."""
-        return list(self.param_dict.keys())
+        """Return list of parameter names including dependencies."""
+        names = list(self.param_dict.keys())
+        names.extend(self.dependencies.keys())
+        return names
 
 
 class ConditionalSearchSpace(OptunaSearchSpace):
