@@ -8,6 +8,9 @@ without unnecessary abstraction layers.
 import os
 import json
 import yaml
+import tempfile
+import shutil
+import atexit
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, Union, Type, List
 import logging
@@ -69,7 +72,8 @@ class OptunaDrivenOptimizer:
             n_trials: Number of trials to run
             timeout: Time limit for optimization in seconds
             callbacks: Additional Lightning callbacks
-            experiment_dir: Directory for saving experiments
+            experiment_dir: Directory for saving experiments. If None, uses a temporary
+                           directory that will be cleaned up after optimization
             save_checkpoints: Whether to save model checkpoints
             metric: Metric to optimize
             verbose: Whether to print progress
@@ -102,10 +106,25 @@ class OptunaDrivenOptimizer:
         self.n_trials = n_trials
         self.timeout = timeout
         self.callbacks = callbacks or []
-        self.experiment_dir = Path(experiment_dir or "./optuna_experiments")
         self.save_checkpoints = save_checkpoints
         self.metric = metric
         self.verbose = verbose
+        
+        # Setup experiment directory
+        self._temp_dir = None
+        if experiment_dir is None:
+            # Create temporary directory
+            self._temp_dir = tempfile.mkdtemp(prefix=f"{study_name}_")
+            self.experiment_dir = Path(self._temp_dir)
+            if self.verbose:
+                logger.info(f"📁 Using temporary directory: {self.experiment_dir}")
+                logger.info("   Results will be cleaned up after optimization")
+            # Register cleanup function
+            atexit.register(self._cleanup_temp_dir)
+        else:
+            self.experiment_dir = Path(experiment_dir)
+            if self.verbose:
+                logger.info(f"📁 Using persistent directory: {self.experiment_dir}")
         
         # Create experiment directory
         self.experiment_dir.mkdir(parents=True, exist_ok=True)
@@ -114,6 +133,16 @@ class OptunaDrivenOptimizer:
         self.study = None
         self.best_trial = None
         self.best_checkpoint = None
+    
+    def _cleanup_temp_dir(self):
+        """Clean up temporary directory if it was created."""
+        if self._temp_dir and Path(self._temp_dir).exists():
+            try:
+                shutil.rmtree(self._temp_dir)
+                if self.verbose:
+                    logger.info(f"🧹 Cleaned up temporary directory: {self._temp_dir}")
+            except Exception as e:
+                logger.warning(f"Could not clean up temporary directory: {e}")
     
     def _load_config(self, config_source: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
         """Load configuration from file or dict."""
