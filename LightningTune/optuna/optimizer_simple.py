@@ -21,6 +21,7 @@ from pytorch_lightning.callbacks import Callback
 
 from .search_space import OptunaSearchSpace
 from .callbacks import OptunaPruningCallback
+from ..utils.config_utils import apply_dotted_updates
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class OptunaOptimizer:
             suggested_params = self.search_space.suggest(trial)
             
             # Merge suggested params into config
-            config = self._merge_configs(config, suggested_params)
+            config = apply_dotted_updates(config, suggested_params)
             
             # Create model and datamodule
             model = self.model_class(**config.get('model', {}))
@@ -173,25 +174,6 @@ class OptunaOptimizer:
                 return float('inf') if self.direction == "minimize" else float('-inf')
         
         return objective
-    
-    def _merge_configs(self, base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-        """Merge configuration updates into base config."""
-        result = base.copy()
-        
-        for key, value in updates.items():
-            if '.' in key:
-                # Handle nested keys like "model.learning_rate"
-                parts = key.split('.')
-                current = result
-                for part in parts[:-1]:
-                    if part not in current:
-                        current[part] = {}
-                    current = current[part]
-                current[parts[-1]] = value
-            else:
-                result[key] = value
-        
-        return result
     
     def optimize(self) -> optuna.Study:
         """
@@ -237,7 +219,7 @@ class OptunaOptimizer:
             raise ValueError("No optimization has been run yet")
         
         config = self.base_config.copy()
-        return self._merge_configs(config, self.best_trial.params)
+        return apply_dotted_updates(config, self.best_trial.params)
 
 
 # Usage example:

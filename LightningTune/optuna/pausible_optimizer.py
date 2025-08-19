@@ -26,6 +26,7 @@ from lightning.pytorch.callbacks import Callback
 
 from .optimizer import OptunaDrivenOptimizer
 from .factories import create_sampler, create_pruner
+from .keyboard_monitor import KeyboardMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class PausibleOptunaOptimizer:
     Wrapper around OptunaDrivenOptimizer with pause/resume via WandB artifacts.
     
     This optimizer adds pausibility and checkpointing to standard Optuna optimization:
-    - Press Ctrl+C to pause at the next trial boundary
+    - Press 'p' to pause at the next trial boundary (falls back to Ctrl+C if needed)
     - Automatically saves study state to WandB artifacts
     - Resume from any saved checkpoint
     - Handles PRUNED trials correctly as valid outcomes
@@ -51,7 +52,7 @@ class PausibleOptunaOptimizer:
         ...     study_name="my-study",
         ...     save_every_n_trials=5
         ... )
-        >>> # Run optimization (press Ctrl+C to pause)
+        >>> # Run optimization (press 'p' to pause)
         >>> study = optimizer.optimize(n_trials=100)
         >>> # Resume later
         >>> study = optimizer.optimize(n_trials=100, resume_from="latest")
@@ -84,7 +85,7 @@ class PausibleOptunaOptimizer:
             sampler_name: Name of Optuna sampler to use
             pruner_name: Name of Optuna pruner to use
             save_every_n_trials: Save checkpoint every N trials
-            enable_pause: Whether to enable Ctrl+C pause functionality
+            enable_pause: Whether to enable 'p' key pause functionality
             **optimizer_kwargs: Additional arguments for OptunaDrivenOptimizer
         """
         self.base_config = base_config
@@ -103,18 +104,21 @@ class PausibleOptunaOptimizer:
         self.total_trials_completed = 0
         self.should_pause = False
         
-        # Setup signal handler for graceful pause (if enabled)
+        # Setup keyboard monitor for 'p' key pause
+        self.keyboard_monitor = None
         if enable_pause:
+            self.keyboard_monitor = KeyboardMonitor(pause_key='p')
+            # Also keep Ctrl+C as fallback
             signal.signal(signal.SIGINT, self._handle_pause_signal)
     
     def _handle_pause_signal(self, signum, frame):
-        """Handle Ctrl+C to pause optimization."""
+        """Handle Ctrl+C to pause optimization (fallback)."""
         # Use global lock to prevent duplicate messages from multiple processes
         global _pause_lock
         with _pause_lock:
             if not self.should_pause:  # Only print if not already pausing
                 self.should_pause = True
-                logger.info("\n⏸️  Pause requested. Saving state after current trial...")
+                logger.info("\n⏸️  Pause requested (Ctrl+C). Saving state after current trial...")
     
     def _verify_study_integrity(self, study: optuna.Study) -> tuple[bool, int, str]:
         """
@@ -371,6 +375,12 @@ class PausibleOptunaOptimizer:
         
         objective = optimizer.create_objective()
         
+        # Start keyboard monitoring if available
+        if self.keyboard_monitor:
+            keyboard_started = self.keyboard_monitor.start()
+            if not keyboard_started:
+                logger.info("ℹ️  Keyboard monitoring unavailable, use Ctrl+C to pause")
+        
         # Run trials with periodic saves
         trials_in_batch = 0
         last_saved_trial_count = self.total_trials_completed
@@ -380,6 +390,13 @@ class PausibleOptunaOptimizer:
             trials_before = len([t for t in study.trials 
                                 if t.state in [optuna.trial.TrialState.COMPLETE,
                                               optuna.trial.TrialState.PRUNED]])
+            
+            # Check for keyboard pause request before starting trial
+            if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
+                self.should_pause = True
+                self.keyboard_monitor.clear_pause()
+                logger.info("\n⏸️  Pause requested ('p' pressed). Finishing current batch...")
+                break
             
             try:
                 # Run single trial
@@ -419,10 +436,12 @@ class PausibleOptunaOptimizer:
                     
             except KeyboardInterrupt:
                 if not self.enable_pause:
+                    if self.keyboard_monitor:
+                        self.keyboard_monitor.stop()
                     raise  # Re-raise if pause is disabled
                     
-                # Handle Ctrl+C gracefully
-                logger.info("\n⏸️  Interrupt received. Checking for incomplete trials...")
+                # Handle Ctrl+C gracefully (fallback)
+                logger.info("\n⏸️  Interrupt received (Ctrl+C). Checking for incomplete trials...")
                 self.should_pause = True
                 
                 # Check if we have any incomplete trials
@@ -443,6 +462,10 @@ class PausibleOptunaOptimizer:
                 logger.error(f"Error during trial: {e}")
                 # Continue with next trial
                 continue
+        
+        # Stop keyboard monitoring
+        if self.keyboard_monitor:
+            self.keyboard_monitor.stop()
         
         # Final save - only if we have new finished trials since last save
         if self.wandb_project and self.total_trials_completed > last_saved_trial_count:
