@@ -129,7 +129,8 @@ class KeyboardMonitor:
                 key = self._read_key(timeout=0.1)
                 if key and key.lower() == self.pause_key:
                     self._pause_requested = True
-                    logger.info(f"\n⏸️  Pause requested ('{self.pause_key}' pressed). Finishing current trial...")
+                    logger.info(f"\n⏸️  Pause key ('{self.pause_key}') detected!")
+                    logger.info("   Will pause after current trial completes (not interrupting mid-trial)...")
             except Exception:
                 # Ignore read errors, just continue
                 pass
