@@ -385,7 +385,9 @@ class PausibleOptunaOptimizer:
             if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
                 self.should_pause = True
                 self.keyboard_monitor.clear_pause()
-                logger.info("\n⏸️  Pause requested ('p' pressed). Finishing current batch...")
+                logger.info("\n⏸️  Pause requested ('p' pressed). Will pause after current trial completes...")
+                if self.wandb_project:
+                    logger.info("   Study will be saved to WandB for easy resume")
                 break
             
             try:
@@ -449,7 +451,18 @@ class PausibleOptunaOptimizer:
         
         if self.should_pause:
             logger.info(f"\n⏸️  Paused after {self.total_trials_completed} finished trials")
-            logger.info(f"Resume with: --resume-from latest")
+            if self.wandb_project:
+                logger.info(f"📝 To resume, run:")
+                import sys
+                # Reconstruct the command line with resume flag
+                script_name = sys.argv[0] if sys.argv else "world_model_hpo_optuna.py"
+                resume_cmd = f"python {script_name} --wandb {self.wandb_project} --resume-from latest"
+                if self.study_name != "optuna_study":
+                    resume_cmd += f" --study-name {self.study_name}"
+                logger.info(f"   {resume_cmd}")
+            else:
+                logger.info(f"⚠️  No WandB project configured - checkpoint not saved")
+                logger.info(f"   To enable resume, use --wandb <project-name>")
         else:
             logger.info(f"\n✨ Optimization complete!")
         
