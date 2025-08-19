@@ -14,10 +14,12 @@ import warnings
 try:
     from .optuna.optimizer import OptunaDrivenOptimizer
     from .optuna.optimizer import OptunaDrivenOptimizer as ConfigDrivenOptimizer  # Alias for compatibility
+    from .optuna.pausible_optimizer import PausibleOptunaOptimizer
 except ImportError as e:
-    warnings.warn(f"OptunaDrivenOptimizer not available: {e}")
+    warnings.warn(f"Optuna optimizers not available: {e}")
     OptunaDrivenOptimizer = None
     ConfigDrivenOptimizer = None
+    PausibleOptunaOptimizer = None
 
 # Optuna components
 try:
@@ -85,6 +87,7 @@ __all__ = [
     # Main interface
     "ConfigDrivenOptimizer",  # Alias for backward compatibility
     "OptunaDrivenOptimizer",
+    "PausibleOptunaOptimizer",
     "WandBOptunaOptimizer",
     
     # Search spaces
