@@ -213,11 +213,6 @@ class ReflowOptunaDrivenOptimizer:
             trainer_config.pop('callbacks', None)  # Remove any existing callbacks config
             trainer_config.pop('logger', None)  # Will be set by Reflow or below
             
-            # For HPO, we can keep Lightning's default progress bar since we only pause at trial boundaries
-            # Override Reflow's default behavior of disabling the progress bar
-            if 'enable_progress_bar' not in trainer_config:
-                trainer_config['enable_progress_bar'] = True  # Keep Lightning's progress bar for HPO
-            
             # Setup WandB logger if requested
             wandb_logger = None
             if self.wandb_project:
@@ -263,7 +258,8 @@ class ReflowOptunaDrivenOptimizer:
                             'environment': config.get('environment', {}),
                             'compile': config.get('compile', {})
                         },
-                        auto_configure_logging=False  # We handle logging ourselves
+                        auto_configure_logging=False,  # We handle logging ourselves
+                        disable_pause_callback=True  # Use Lightning's progress bar for HPO
                     )
                     
                     # Run training
