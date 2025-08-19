@@ -16,6 +16,7 @@ import pickle
 import tempfile
 import signal
 import logging
+import threading
 from typing import Optional, Dict, Any, Callable, Union, Type, List
 
 import optuna
@@ -27,6 +28,9 @@ from .optimizer import OptunaDrivenOptimizer
 from .factories import create_sampler, create_pruner
 
 logger = logging.getLogger(__name__)
+
+# Global lock for signal handler to prevent duplicate messages
+_pause_lock = threading.Lock()
 
 
 class PausibleOptunaOptimizer:
@@ -105,8 +109,12 @@ class PausibleOptunaOptimizer:
     
     def _handle_pause_signal(self, signum, frame):
         """Handle Ctrl+C to pause optimization."""
-        logger.info("\n⏸️  Pause requested. Saving state after current trial...")
-        self.should_pause = True
+        # Use global lock to prevent duplicate messages from multiple processes
+        global _pause_lock
+        with _pause_lock:
+            if not self.should_pause:  # Only print if not already pausing
+                self.should_pause = True
+                logger.info("\n⏸️  Pause requested. Saving state after current trial...")
     
     def _verify_study_integrity(self, study: optuna.Study) -> tuple[bool, int, str]:
         """
