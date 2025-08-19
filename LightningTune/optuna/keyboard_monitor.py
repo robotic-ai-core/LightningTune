@@ -33,7 +33,8 @@ class KeyboardMonitor:
     """
     Cross-platform keyboard monitor for detecting 'p' key presses.
     
-    Falls back to Ctrl+C if keyboard monitoring is not available.
+    When keyboard monitoring is not available, pause functionality is disabled.
+    Ctrl+C maintains its standard behavior of terminating the program.
     """
     
     def __init__(self, pause_key: str = 'p'):
