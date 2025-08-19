@@ -250,16 +250,18 @@ class OptunaDrivenOptimizer:
             trainer_config.pop('logger', None)
             
             # Setup WandB logger if requested
-            logger = None
+            wandb_logger = None
             if self.wandb_project:
                 from lightning.pytorch.loggers import WandbLogger
+                import time
                 # Create WandB logger for this trial
-                logger = WandbLogger(
+                # Add timestamp to avoid conflicts with deleted runs
+                timestamp = int(time.time() * 1000)
+                wandb_logger = WandbLogger(
                     project=self.wandb_project,
-                    name=f"trial_{trial.number}",
-                    id=f"{self.study_name}_trial_{trial.number}",
+                    name=f"trial_{trial.number}_{timestamp}",
+                    id=f"{self.study_name}_trial_{trial.number}_{timestamp}",
                     config=config,  # Log the full config including hyperparameters
-                    reinit=True,  # Allow reinit for multiple trials
                     log_model=self.upload_checkpoints,  # Control checkpoint uploads
                 )
             
@@ -273,7 +275,7 @@ class OptunaDrivenOptimizer:
             
             trainer = Trainer(
                 callbacks=callbacks,
-                logger=logger,
+                logger=wandb_logger,
                 **trainer_config
             )
             
