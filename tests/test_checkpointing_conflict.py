@@ -17,8 +17,8 @@ from LightningTune import OptunaDrivenOptimizer, SimpleSearchSpace
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
 
-import pytorch_lightning as pl
-from pytorch_lightning import LightningModule
+import lightning as L
+from lightning.pytorch import LightningModule
 import torch
 import torch.nn as nn
 
@@ -51,7 +51,7 @@ class DummyModel(LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
 
-class DummyDataModule(pl.LightningDataModule):
+class DummyDataModule(L.LightningDataModule):
     """Simple data module for testing."""
     def __init__(self, batch_size=32):
         super().__init__()

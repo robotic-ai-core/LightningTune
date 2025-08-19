@@ -11,8 +11,8 @@ from typing import Optional, Any, Dict
 import logging
 
 import optuna
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Callback
+import lightning as L
+from lightning.pytorch.callbacks import Callback
 import torch
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class OptunaPruningCallback(Callback):
         self.report_every_n_steps = report_every_n_steps
         self.current_step = 0
     
-    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_validation_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         """Check if trial should be pruned at validation end."""
         # Skip if using step-based reporting
         if self.report_every_n_steps is not None:
@@ -74,8 +74,8 @@ class OptunaPruningCallback(Callback):
     
     def on_train_batch_end(
         self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
         outputs: Any,
         batch: Any,
         batch_idx: int,
@@ -151,8 +151,8 @@ class OptunaCheckpointCallback(Callback):
     
     def _save_checkpoint(
         self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
         epoch: int,
         step: int,
         metric_value: Optional[float] = None,
@@ -188,7 +188,7 @@ class OptunaCheckpointCallback(Callback):
         
         return filepath
     
-    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_validation_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         """Save checkpoint if metric improved."""
         if self.monitor not in trainer.callback_metrics:
             return
@@ -223,7 +223,7 @@ class OptunaCheckpointCallback(Callback):
                     oldest.unlink()
                     logger.debug(f"Removed old checkpoint: {oldest}")
     
-    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_train_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         """Optionally save checkpoint at end of training epoch."""
         if not self.save_on_train_epoch_end:
             return
@@ -235,7 +235,7 @@ class OptunaCheckpointCallback(Callback):
             trainer.global_step,
         )
     
-    def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_train_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         """Log final checkpoint information."""
         if self.best_checkpoint_path:
             logger.info(f"Best checkpoint for trial {self.trial.number}: {self.best_checkpoint_path}")
@@ -268,7 +268,7 @@ class OptunaProgressCallback(Callback):
         self.trial = trial
         self.print_every_n_epochs = print_every_n_epochs
     
-    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_train_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         """Print progress at end of training epoch."""
         epoch = trainer.current_epoch
         
@@ -337,7 +337,7 @@ class OptunaEarlyStoppingCallback(Callback):
             return current < (best - self.min_delta)
         return current > (best + self.min_delta)
     
-    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_validation_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         """Check for early stopping at validation end."""
         if self.monitor not in trainer.callback_metrics:
             return
@@ -355,7 +355,7 @@ class OptunaEarlyStoppingCallback(Callback):
                 trainer.should_stop = True
                 logger.info(f"Early stopping triggered at epoch {self.stopped_epoch}")
     
-    def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_train_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         """Report final metric to Optuna."""
         if self.stopped_epoch > 0:
             logger.info(f"Training stopped early at epoch {self.stopped_epoch}")

@@ -7,12 +7,12 @@ import torch.nn as nn
 try:
     import lightning.pytorch as pl
 except ImportError:
-    import pytorch_lightning as pl
+    import lightning as L
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 
 
-class DummyModel(pl.LightningModule):
+class DummyModel(L.LightningModule):
     """Simple model for testing optimization."""
     
     def __init__(
@@ -128,7 +128,7 @@ class DummyModel(pl.LightningModule):
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
 
 
-class DummyDataModule(pl.LightningDataModule):
+class DummyDataModule(L.LightningDataModule):
     """Simple data module for testing."""
     
     def __init__(
