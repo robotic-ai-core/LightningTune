@@ -233,11 +233,17 @@ class OptunaDrivenOptimizer:
             
             # Remove any conflicting parameters
             trainer_config.pop('callbacks', None)
-            trainer_config.pop('enable_progress_bar', None)
+            
+            # Use progress bar if requested, but configure it properly
+            if trainer_config.get('enable_progress_bar', True):
+                from lightning.pytorch.callbacks import RichProgressBar
+                # Use RichProgressBar for better formatting in HPO context
+                progress_callback = RichProgressBar(refresh_rate=10)
+                callbacks.append(progress_callback)
+                trainer_config['enable_progress_bar'] = False  # We'll use callback instead
             
             trainer = Trainer(
                 callbacks=callbacks,
-                enable_progress_bar=self.verbose,
                 **trainer_config
             )
             
@@ -303,12 +309,24 @@ class OptunaDrivenOptimizer:
         objective = self.create_objective()
         
         # Run optimization
-        self.study.optimize(
-            objective,
-            n_trials=self.n_trials,
-            timeout=self.timeout,
-            show_progress_bar=self.verbose
-        )
+        if self.verbose:
+            print(f"\n🔬 Running {self.n_trials} trials...")
+            
+        for i in range(self.n_trials):
+            if self.verbose:
+                print(f"\n📊 Trial {i+1}/{self.n_trials}")
+            
+            # Run single trial without progress bar
+            self.study.optimize(
+                objective,
+                n_trials=1,
+                timeout=self.timeout if i == self.n_trials - 1 else None,
+                show_progress_bar=False  # Never show Optuna's progress bar
+            )
+            
+            # Report current best after each trial
+            if self.verbose and self.study.best_trial:
+                print(f"   Current best value: {self.study.best_value:.6f} (trial {self.study.best_trial.number})")
         
         # Store best trial
         self.best_trial = self.study.best_trial
