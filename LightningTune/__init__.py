@@ -35,6 +35,12 @@ try:
         OptunaProgressCallback,
         OptunaEarlyStoppingCallback,
     )
+    from .optuna.factories import (
+        create_sampler,
+        create_pruner,
+        get_sampler_info,
+        get_pruner_info,
+    )
     # Re-export Optuna's actual components for convenience
     from optuna.samplers import (
         TPESampler,
@@ -68,6 +74,10 @@ except ImportError as e:
     HyperbandPruner = None
     SuccessiveHalvingPruner = None
     NopPruner = None
+    create_sampler = None
+    create_pruner = None
+    get_sampler_info = None
+    get_pruner_info = None
 
 __version__ = "0.4.0"  # Bumped version for major refactor
 
@@ -89,6 +99,12 @@ __all__ = [
     "OptunaCheckpointCallback",
     "OptunaProgressCallback",
     "OptunaEarlyStoppingCallback",
+    
+    # Factory functions
+    "create_sampler",
+    "create_pruner",
+    "get_sampler_info",
+    "get_pruner_info",
     
     # Optuna Samplers (actual Optuna components)
     "TPESampler",
