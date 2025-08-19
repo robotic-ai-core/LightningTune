@@ -2,142 +2,103 @@
 LightningTune: Optuna-based hyperparameter optimization for PyTorch Lightning.
 
 This module provides modern hyperparameter optimization using Optuna
-for Lightning projects with comprehensive strategy support, pause/resume
+for Lightning projects with direct dependency injection, pause/resume
 capabilities, and WandB integration.
+
+No unnecessary abstractions - just use Optuna's samplers and pruners directly.
 """
 
-# Import conditionally to handle missing dependencies
 import warnings
 
 # Primary interface - Optuna-based optimizer
 try:
-    from .optuna.optimizer import OptunaDrivenOptimizer as ConfigDrivenOptimizer
+    from .optuna.optimizer import OptunaDrivenOptimizer
+    from .optuna.optimizer import OptunaDrivenOptimizer as ConfigDrivenOptimizer  # Alias for compatibility
 except ImportError as e:
     warnings.warn(f"OptunaDrivenOptimizer not available: {e}")
+    OptunaDrivenOptimizer = None
     ConfigDrivenOptimizer = None
 
-# Optuna-specific imports
+# Optuna components
 try:
-    from .optuna.optimizer import OptunaDrivenOptimizer
     from .optuna.wandb_integration import WandBOptunaOptimizer
-except ImportError as e:
-    warnings.warn(f"Optuna optimizers not available: {e}")
-    OptunaDrivenOptimizer = None
-    WandBOptunaOptimizer = None
-
-# Optuna Strategies
-try:
-    from .optuna.strategies import (
-        OptunaStrategy,
-        BOHBStrategy,
-        TPEStrategy,
-        RandomStrategy,
-        GridStrategy,
-        ASHAStrategy,
-        CMAESStrategy,
+    from .optuna.search_space import (
+        OptunaSearchSpace,
+        SimpleSearchSpace,
+        ConditionalSearchSpace,
+        CompositeSearchSpace,
+        DynamicSearchSpace,
     )
-except ImportError as e:
-    warnings.warn(f"Optuna strategies not available: {e}")
-    OptunaStrategy = None
-    BOHBStrategy = None
-    TPEStrategy = None
-    RandomStrategy = None
-    GridStrategy = None
-    ASHAStrategy = None
-    CMAESStrategy = None
-
-# Optuna Configuration
-try:
-    from .optuna.search_space import OptunaSearchSpace
-except ImportError as e:
-    warnings.warn(f"Optuna search space not available: {e}")
-    OptunaSearchSpace = None
-
-# Legacy configuration support (for backward compatibility)
-try:
-    from .core.config import (
-        SearchSpace,
-        StandardSearchSpace,
-        ConfigManager,
-    )
-except ImportError as e:
-    warnings.warn(f"Legacy configuration classes not available: {e}")
-    SearchSpace = None
-    StandardSearchSpace = None
-    ConfigManager = None
-
-# Optuna Callbacks
-try:
     from .optuna.callbacks import (
         OptunaPruningCallback,
         OptunaCheckpointCallback,
+        OptunaProgressCallback,
+        OptunaEarlyStoppingCallback,
+    )
+    # Re-export Optuna's actual components for convenience
+    from optuna.samplers import (
+        TPESampler,
+        RandomSampler,
+        GridSampler,
+        CmaEsSampler,
+    )
+    from optuna.pruners import (
+        MedianPruner,
+        HyperbandPruner,
+        SuccessiveHalvingPruner,
+        NopPruner,
     )
 except ImportError as e:
-    warnings.warn(f"Optuna callbacks not available: {e}")
+    warnings.warn(f"Optuna components not available: {e}")
+    WandBOptunaOptimizer = None
+    OptunaSearchSpace = None
+    SimpleSearchSpace = None
+    ConditionalSearchSpace = None
+    CompositeSearchSpace = None
+    DynamicSearchSpace = None
     OptunaPruningCallback = None
     OptunaCheckpointCallback = None
+    OptunaProgressCallback = None
+    OptunaEarlyStoppingCallback = None
+    TPESampler = None
+    RandomSampler = None
+    GridSampler = None
+    CmaEsSampler = None
+    MedianPruner = None
+    HyperbandPruner = None
+    SuccessiveHalvingPruner = None
+    NopPruner = None
 
-# Legacy callbacks (for backward compatibility)
-try:
-    from .callbacks.report import (
-        BOHBReportCallback,
-        AdaptiveBOHBCallback,
-    )
-    from .callbacks.tune_pause_callback import (
-        TunePauseCallback,
-        TuneResumeCallback,
-    )
-except ImportError as e:
-    warnings.warn(f"Legacy callbacks not available: {e}")
-    BOHBReportCallback = None
-    AdaptiveBOHBCallback = None
-    TunePauseCallback = None
-    TuneResumeCallback = None
-
-# CLI - Legacy support
-try:
-    from .cli.tune_reflow import TuneReflowCLI
-except ImportError as e:
-    warnings.warn(f"TuneReflowCLI not available: {e}. Legacy CLI no longer supported after Ray Tune removal.")
-    TuneReflowCLI = None
-
-# Legacy aliases for backward compatibility
-ConfigDrivenBOHBOptimizer = ConfigDrivenOptimizer  # Alias for compatibility
-
-__version__ = "0.3.0"
+__version__ = "0.4.0"  # Bumped version for major refactor
 
 __all__ = [
     # Main interface
-    "ConfigDrivenOptimizer",
+    "ConfigDrivenOptimizer",  # Alias for backward compatibility
     "OptunaDrivenOptimizer",
     "WandBOptunaOptimizer",
     
-    # Optuna Strategies
-    "OptunaStrategy",
-    "BOHBStrategy",
-    "TPEStrategy",
-    "RandomStrategy", 
-    "GridStrategy",
-    "ASHAStrategy",
-    "CMAESStrategy",
-    
-    # Configuration
+    # Search spaces
     "OptunaSearchSpace",
+    "SimpleSearchSpace",
+    "ConditionalSearchSpace",
+    "CompositeSearchSpace",
+    "DynamicSearchSpace",
     
-    # Optuna Callbacks
+    # Callbacks
     "OptunaPruningCallback",
     "OptunaCheckpointCallback",
+    "OptunaProgressCallback",
+    "OptunaEarlyStoppingCallback",
     
-    # Legacy support (for backward compatibility)
-    "SearchSpace",
-    "StandardSearchSpace", 
-    "ConfigManager",
-    "BOHBReportCallback",
-    "AdaptiveBOHBCallback",
-    "TunePauseCallback",
-    "TuneResumeCallback",
-    "TuneReflowCLI",
+    # Optuna Samplers (actual Optuna components)
+    "TPESampler",
+    "RandomSampler",
+    "GridSampler",
+    "CmaEsSampler",
     
-    # Legacy/Aliases
-    "ConfigDrivenBOHBOptimizer",
+    # Optuna Pruners (actual Optuna components)
+    "MedianPruner",
+    "HyperbandPruner",
+    "SuccessiveHalvingPruner",
+    "NopPruner",
 ]

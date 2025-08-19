@@ -1,5 +1,5 @@
 """
-Optuna-driven optimizer for PyTorch Lightning using direct dependency injection.
+Simplified Optuna-driven optimizer for PyTorch Lightning using dependency injection.
 
 This module provides a clean optimizer that directly uses Optuna's samplers and pruners
 without unnecessary abstraction layers.
@@ -9,12 +9,12 @@ import os
 import json
 import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable, Union, Type, List
+from typing import Dict, Any, Optional, Callable, Union, Type
 import logging
 
 import optuna
 from optuna.samplers import BaseSampler, TPESampler
-from optuna.pruners import BasePruner, MedianPruner, NopPruner
+from optuna.pruners import BasePruner, MedianPruner
 import pytorch_lightning as pl
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import Callback
@@ -25,7 +25,7 @@ from .callbacks import OptunaPruningCallback
 logger = logging.getLogger(__name__)
 
 
-class OptunaDrivenOptimizer:
+class OptunaOptimizer:
     """
     Simple, clean optimizer using Optuna with dependency injection.
     
@@ -45,7 +45,7 @@ class OptunaDrivenOptimizer:
         direction: str = "minimize",
         n_trials: int = 100,
         timeout: Optional[float] = None,
-        callbacks: Optional[List[Callback]] = None,
+        callbacks: Optional[list] = None,
         experiment_dir: Optional[Path] = None,
         save_checkpoints: bool = True,
         metric: str = "val_loss",
@@ -60,9 +60,7 @@ class OptunaDrivenOptimizer:
             model_class: PyTorch Lightning module class
             datamodule_class: Optional PyTorch Lightning datamodule class
             sampler: Optuna sampler (e.g., TPESampler, RandomSampler, CmaEsSampler)
-                    If None, defaults to TPESampler()
             pruner: Optuna pruner (e.g., MedianPruner, HyperbandPruner, SuccessiveHalvingPruner)
-                   If None, defaults to MedianPruner()
             study_name: Name for the Optuna study
             storage: Storage URL for Optuna (e.g., "sqlite:///study.db")
             direction: Optimization direction ("minimize" or "maximize")
@@ -73,19 +71,6 @@ class OptunaDrivenOptimizer:
             save_checkpoints: Whether to save model checkpoints
             metric: Metric to optimize
             verbose: Whether to print progress
-            
-        Example:
-            >>> from optuna.samplers import TPESampler
-            >>> from optuna.pruners import HyperbandPruner
-            >>> 
-            >>> optimizer = OptunaDrivenOptimizer(
-            ...     base_config="config.yaml",
-            ...     search_space=search_space,
-            ...     model_class=MyModel,
-            ...     sampler=TPESampler(n_startup_trials=10),
-            ...     pruner=HyperbandPruner(min_resource=1, max_resource=100)
-            ... )
-            >>> study = optimizer.optimize()
         """
         self.base_config = self._load_config(base_config)
         self.search_space = search_space
@@ -93,8 +78,8 @@ class OptunaDrivenOptimizer:
         self.datamodule_class = datamodule_class
         
         # Use provided sampler/pruner or defaults
-        self.sampler = sampler if sampler is not None else TPESampler()
-        self.pruner = pruner if pruner is not None else MedianPruner()
+        self.sampler = sampler or TPESampler()
+        self.pruner = pruner or MedianPruner()
         
         self.study_name = study_name or "optuna_study"
         self.storage = storage
@@ -142,29 +127,16 @@ class OptunaDrivenOptimizer:
         def objective(trial: optuna.Trial) -> float:
             # Suggest hyperparameters using the search space
             config = self.base_config.copy()
-            suggested_params = self.search_space.suggest_params(trial)
+            suggested_params = self.search_space.suggest(trial)
             
             # Merge suggested params into config
             config = self._merge_configs(config, suggested_params)
             
             # Create model and datamodule
-            # Handle LightningCLI-style config with class_path and init_args
-            model_config = config.get('model', {})
-            if 'init_args' in model_config:
-                model_args = model_config['init_args']
-            else:
-                model_args = model_config
-            
-            data_config = config.get('data', {})
-            if 'init_args' in data_config:
-                data_args = data_config['init_args']
-            else:
-                data_args = data_config
-                
-            model = self.model_class(**model_args)
+            model = self.model_class(**config.get('model', {}))
             
             if self.datamodule_class:
-                datamodule = self.datamodule_class(**data_args)
+                datamodule = self.datamodule_class(**config.get('data', {}))
             else:
                 datamodule = None
             
@@ -172,31 +144,15 @@ class OptunaDrivenOptimizer:
             callbacks = list(self.callbacks)
             
             # Add pruning callback if pruner is not NopPruner
-            if not isinstance(self.pruner, NopPruner):
+            if self.pruner and not isinstance(self.pruner, optuna.pruners.NopPruner):
                 pruning_callback = OptunaPruningCallback(trial, monitor=self.metric)
                 callbacks.append(pruning_callback)
             
-            # Add checkpoint callback if requested
-            if self.save_checkpoints:
-                from pytorch_lightning.callbacks import ModelCheckpoint
-                checkpoint_callback = ModelCheckpoint(
-                    dirpath=self.experiment_dir / f"trial_{trial.number}",
-                    filename="{epoch}-{val_loss:.2f}",
-                    monitor=self.metric,
-                    mode="min" if self.direction == "minimize" else "max",
-                    save_top_k=1,
-                )
-                callbacks.append(checkpoint_callback)
-            
             # Create trainer
             trainer_config = config.get('trainer', {})
-            # Remove any conflicting parameters
-            trainer_config.pop('callbacks', None)
-            trainer_config.pop('enable_progress_bar', None)
-            
             trainer = Trainer(
                 callbacks=callbacks,
-                enable_progress_bar=self.verbose,
+                enable_progress_bar=not self.verbose,
                 **trainer_config
             )
             
@@ -208,16 +164,12 @@ class OptunaDrivenOptimizer:
                     trainer.fit(model)
                 
                 # Return the metric value
-                if self.metric in trainer.callback_metrics:
-                    return trainer.callback_metrics[self.metric].item()
-                else:
-                    logger.warning(f"Metric {self.metric} not found in callback_metrics")
-                    return float('inf') if self.direction == "minimize" else float('-inf')
+                return trainer.callback_metrics[self.metric].item()
                 
             except optuna.TrialPruned:
                 raise
             except Exception as e:
-                logger.error(f"Trial {trial.number} failed: {e}")
+                logger.error(f"Trial failed: {e}")
                 return float('inf') if self.direction == "minimize" else float('-inf')
         
         return objective
@@ -277,15 +229,6 @@ class OptunaDrivenOptimizer:
             print(f"Best value: {self.best_trial.value}")
             print(f"Best params: {self.best_trial.params}")
         
-        # Save results
-        results_file = self.experiment_dir / "best_params.json"
-        with open(results_file, 'w') as f:
-            json.dump({
-                "trial_number": self.best_trial.number,
-                "value": self.best_trial.value,
-                "params": self.best_trial.params,
-            }, f, indent=2)
-        
         return self.study
     
     def get_best_config(self) -> Dict[str, Any]:
@@ -295,10 +238,46 @@ class OptunaDrivenOptimizer:
         
         config = self.base_config.copy()
         return self._merge_configs(config, self.best_trial.params)
-    
-    def resume(self) -> optuna.Study:
-        """Resume optimization from a previous run."""
-        if not self.storage:
-            raise ValueError("Cannot resume without storage. Set storage parameter.")
-        
-        return self.optimize()
+
+
+# Usage example:
+"""
+from optuna.samplers import TPESampler, RandomSampler, CmaEsSampler
+from optuna.pruners import MedianPruner, HyperbandPruner, SuccessiveHalvingPruner, NopPruner
+
+# Simple TPE optimization
+optimizer = OptunaOptimizer(
+    base_config="config.yaml",
+    search_space=search_space,
+    model_class=MyModel,
+    sampler=TPESampler(n_startup_trials=10),
+    pruner=MedianPruner(n_warmup_steps=5)
+)
+
+# TPE with Hyperband (what people call "BOHB-like")
+optimizer = OptunaOptimizer(
+    base_config="config.yaml",
+    search_space=search_space,
+    model_class=MyModel,
+    sampler=TPESampler(),
+    pruner=HyperbandPruner(min_resource=1, max_resource=100)
+)
+
+# Random search without pruning
+optimizer = OptunaOptimizer(
+    base_config="config.yaml",
+    search_space=search_space,
+    model_class=MyModel,
+    sampler=RandomSampler(),
+    pruner=NopPruner()
+)
+
+# CMA-ES for continuous optimization
+optimizer = OptunaOptimizer(
+    base_config="config.yaml",
+    search_space=search_space,
+    model_class=MyModel,
+    sampler=CmaEsSampler(),
+    pruner=MedianPruner()
+)
+"""
