@@ -246,6 +246,9 @@ class OptunaDrivenOptimizer:
             # Remove any conflicting parameters
             trainer_config.pop('callbacks', None)
             
+            # Remove any existing logger config first
+            trainer_config.pop('logger', None)
+            
             # Setup WandB logger if requested
             logger = None
             if self.wandb_project:
@@ -259,15 +262,14 @@ class OptunaDrivenOptimizer:
                     reinit=True,  # Allow reinit for multiple trials
                     log_model=self.upload_checkpoints,  # Control checkpoint uploads
                 )
-                trainer_config.pop('logger', None)  # Remove any existing logger config
             
-            # Use progress bar if requested, but configure it properly
-            if trainer_config.get('enable_progress_bar', True):
+            # Handle progress bar configuration
+            if trainer_config.get('enable_progress_bar', False):
+                # Only add RichProgressBar if progress bar is enabled
                 from lightning.pytorch.callbacks import RichProgressBar
-                # Use RichProgressBar for better formatting in HPO context
                 progress_callback = RichProgressBar(refresh_rate=10)
                 callbacks.append(progress_callback)
-                trainer_config['enable_progress_bar'] = False  # We'll use callback instead
+                # Keep enable_progress_bar as True since we want the progress bar
             
             trainer = Trainer(
                 callbacks=callbacks,
