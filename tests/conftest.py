@@ -14,26 +14,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import checking
 try:
-    import ray
-except ImportError:
-    ray = None
-
-try:
     import pytorch_lightning
     import torch
     PYTORCH_AVAILABLE = True
 except ImportError:
     PYTORCH_AVAILABLE = False
-
-
-@pytest.fixture(scope="session", autouse=True)
-def cleanup_ray():
-    """Ensure Ray is cleaned up after tests."""
-    yield
-    # Cleanup Ray after tests
-    import ray
-    if ray.is_initialized():
-        ray.shutdown()
 
 
 @pytest.fixture
@@ -100,20 +85,16 @@ def mock_search_space():
 @pytest.fixture
 def mock_strategy():
     """Create a mock strategy."""
-    from LightningTune.core.strategies import BOHBStrategy
+    from LightningTune.optuna.strategies import OptunaBOHBStrategy
     
-    return BOHBStrategy(
-        max_t=10,
-        reduction_factor=2,
+    return OptunaBOHBStrategy(
+        n_trials=10,
     )
 
 
 # Skip markers for missing dependencies
 def pytest_configure(config):
     """Configure pytest with custom markers."""
-    config.addinivalue_line(
-        "markers", "requires_ray: mark test as requiring Ray"
-    )
     config.addinivalue_line(
         "markers", "requires_pytorch: mark test as requiring PyTorch"
     )
@@ -124,7 +105,6 @@ def pytest_configure(config):
 
 def pytest_collection_modifyitems(config, items):
     """Skip tests based on available dependencies."""
-    skip_ray = pytest.mark.skip(reason="Ray not installed")
     skip_pytorch = pytest.mark.skip(reason="PyTorch not installed")
     
     for item in items:

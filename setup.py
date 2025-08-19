@@ -35,6 +35,7 @@ setup(
             "pytest-cov>=4.0.0",
             "pytest-timeout>=2.1.0",
             "pytest-mock>=3.10.0",
+            "torchvision>=0.15.0",  # For Fashion-MNIST e2e tests
         ],
         "dev": [
             "black>=23.0.0",

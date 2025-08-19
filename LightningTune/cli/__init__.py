@@ -1,16 +1,12 @@
 """
-CLI components for Lightning BOHB.
+CLI components package - Ray Tune CLI removed.
 
-Provides command-line interfaces for interactive optimization control.
+Legacy Ray Tune CLI components have been removed.
+Use Optuna-based optimization directly instead.
 """
 
-import warnings
-
-try:
-    from .tune_reflow import TuneReflowCLI
-except ImportError as e:
-    warnings.warn(f"TuneReflowCLI not available: {e}")
-    TuneReflowCLI = None
+# Legacy Ray Tune CLI removed
+TuneReflowCLI = None
 
 __all__ = [
     "TuneReflowCLI",

@@ -1,24 +1,16 @@
-"""Lightning callbacks for BOHB optimization."""
+"""Lightning callbacks package - Ray Tune callbacks removed, migrated to Optuna."""
 
-import warnings
+# Legacy Ray Tune callbacks have been removed
+# Use Optuna callbacks from LightningTune.optuna.callbacks instead
 
-try:
-    from .report import BOHBReportCallback, AdaptiveBOHBCallback
-except ImportError as e:
-    warnings.warn(f"Report callbacks not available: {e}")
-    BOHBReportCallback = None
-    AdaptiveBOHBCallback = None
-
-try:
-    from .tune_pause_callback import TunePauseCallback, TuneResumeCallback
-except ImportError as e:
-    warnings.warn(f"Pause callbacks not available: {e}")
-    TunePauseCallback = None
-    TuneResumeCallback = None
+BOHBReportCallback = None
+AdaptiveBOHBCallback = None
+TunePauseCallback = None
+TuneResumeCallback = None
 
 __all__ = [
     "BOHBReportCallback",
-    "AdaptiveBOHBCallback",
+    "AdaptiveBOHBCallback", 
     "TunePauseCallback",
     "TuneResumeCallback",
 ]
