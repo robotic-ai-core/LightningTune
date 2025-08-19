@@ -19,8 +19,14 @@ import optuna
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.pruners import BasePruner, MedianPruner, NopPruner
 import pytorch_lightning as pl
-from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import Callback
+# Support both pytorch_lightning and lightning imports
+try:
+    import lightning as L
+    from lightning import LightningModule
+except ImportError:
+    from pytorch_lightning import LightningModule
 
 from .search_space import OptunaSearchSpace
 from .callbacks import OptunaPruningCallback
@@ -39,8 +45,8 @@ class OptunaDrivenOptimizer:
         self,
         base_config: Union[str, Path, Dict[str, Any]],
         search_space: OptunaSearchSpace,
-        model_class: Type[LightningModule],
-        datamodule_class: Optional[Type[pl.LightningDataModule]] = None,
+        model_class: Type,  # Type[LightningModule] but supporting both imports
+        datamodule_class: Optional[Type] = None,  # Type[LightningDataModule] but supporting both
         sampler: Optional[BaseSampler] = None,  # Direct Optuna sampler
         pruner: Optional[BasePruner] = None,    # Direct Optuna pruner
         config_overrides: Optional[Dict[str, Any]] = None,  # Fixed config overrides
