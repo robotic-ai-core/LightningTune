@@ -38,7 +38,7 @@ class OptunaDrivenOptimizer:
     def __init__(
         self,
         base_config: Union[str, Path, Dict[str, Any]],
-        search_space: OptunaSearchSpace,
+        search_space: Union[OptunaSearchSpace, Callable[[optuna.Trial], Dict[str, Any]]],
         model_class: Type,  # Type[LightningModule] but supporting both imports
         datamodule_class: Optional[Type] = None,  # Type[LightningDataModule] but supporting both
         sampler: Optional[BaseSampler] = None,  # Direct Optuna sampler
@@ -62,7 +62,8 @@ class OptunaDrivenOptimizer:
         
         Args:
             base_config: Base configuration (path to YAML/JSON or dict)
-            search_space: OptunaSearchSpace instance defining parameters to optimize
+            search_space: OptunaSearchSpace instance or callable function that takes
+                         a trial and returns suggested parameters
             model_class: PyTorch Lightning module class
             datamodule_class: Optional PyTorch Lightning datamodule class
             sampler: Optuna sampler (e.g., TPESampler, RandomSampler, CmaEsSampler)
@@ -188,7 +189,12 @@ class OptunaDrivenOptimizer:
                 config = self._merge_configs(config, self.config_overrides)
             
             # Then apply suggested hyperparameters from search space
-            suggested_params = self.search_space.suggest_params(trial)
+            if callable(self.search_space) and not hasattr(self.search_space, 'suggest_params'):
+                # It's a function
+                suggested_params = self.search_space(trial)
+            else:
+                # It's an OptunaSearchSpace object
+                suggested_params = self.search_space.suggest_params(trial)
             config = self._merge_configs(config, suggested_params)
             
             # Create model and datamodule
