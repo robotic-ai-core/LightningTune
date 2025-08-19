@@ -14,9 +14,7 @@ are saved, never RUNNING or WAITING trials.
 import os
 import pickle
 import tempfile
-import signal
 import logging
-import threading
 from typing import Optional, Dict, Any, Callable, Union, Type, List
 
 import optuna
@@ -30,16 +28,13 @@ from .keyboard_monitor import KeyboardMonitor
 
 logger = logging.getLogger(__name__)
 
-# Global lock for signal handler to prevent duplicate messages
-_pause_lock = threading.Lock()
-
 
 class PausibleOptunaOptimizer:
     """
     Wrapper around OptunaDrivenOptimizer with pause/resume via WandB artifacts.
     
     This optimizer adds pausibility and checkpointing to standard Optuna optimization:
-    - Press 'p' to pause at the next trial boundary (falls back to Ctrl+C if needed)
+    - Press 'p' to pause at the next trial boundary
     - Automatically saves study state to WandB artifacts
     - Resume from any saved checkpoint
     - Handles PRUNED trials correctly as valid outcomes
@@ -108,17 +103,7 @@ class PausibleOptunaOptimizer:
         self.keyboard_monitor = None
         if enable_pause:
             self.keyboard_monitor = KeyboardMonitor(pause_key='p')
-            # Also keep Ctrl+C as fallback
-            signal.signal(signal.SIGINT, self._handle_pause_signal)
     
-    def _handle_pause_signal(self, signum, frame):
-        """Handle Ctrl+C to pause optimization (fallback)."""
-        # Use global lock to prevent duplicate messages from multiple processes
-        global _pause_lock
-        with _pause_lock:
-            if not self.should_pause:  # Only print if not already pausing
-                self.should_pause = True
-                logger.info("\n⏸️  Pause requested (Ctrl+C). Saving state after current trial...")
     
     def _verify_study_integrity(self, study: optuna.Study) -> tuple[bool, int, str]:
         """
@@ -379,7 +364,7 @@ class PausibleOptunaOptimizer:
         if self.keyboard_monitor:
             keyboard_started = self.keyboard_monitor.start()
             if not keyboard_started:
-                logger.info("ℹ️  Keyboard monitoring unavailable, use Ctrl+C to pause")
+                logger.info("ℹ️  Keyboard monitoring unavailable, pause functionality disabled")
         
         # Run trials with periodic saves
         trials_in_batch = 0
@@ -435,28 +420,11 @@ class PausibleOptunaOptimizer:
                     logger.info(f"Trial failed with error")
                     
             except KeyboardInterrupt:
-                if not self.enable_pause:
-                    if self.keyboard_monitor:
-                        self.keyboard_monitor.stop()
-                    raise  # Re-raise if pause is disabled
-                    
-                # Handle Ctrl+C gracefully (fallback)
-                logger.info("\n⏸️  Interrupt received (Ctrl+C). Checking for incomplete trials...")
-                self.should_pause = True
-                
-                # Check if we have any incomplete trials
-                incomplete_trials = [t for t in study.trials 
-                                   if t.state not in [optuna.trial.TrialState.COMPLETE,
-                                                      optuna.trial.TrialState.PRUNED,
-                                                      optuna.trial.TrialState.FAIL]]
-                if incomplete_trials:
-                    logger.warning(f"⚠️  Found {len(incomplete_trials)} incomplete trial(s). These will not be saved.")
-                
-                # Ensure total_trials_completed reflects only finished trials (COMPLETE + PRUNED)
-                self.total_trials_completed = len([t for t in study.trials 
-                                                  if t.state in [optuna.trial.TrialState.COMPLETE,
-                                                                 optuna.trial.TrialState.PRUNED]])
-                break
+                # Clean up keyboard monitor before terminating
+                if self.keyboard_monitor:
+                    self.keyboard_monitor.stop()
+                logger.info("\n❌ Optimization terminated by user (Ctrl+C)")
+                raise  # Re-raise to terminate
                 
             except Exception as e:
                 logger.error(f"Error during trial: {e}")
