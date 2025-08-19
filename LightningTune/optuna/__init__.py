@@ -9,6 +9,7 @@ Just pass Optuna's samplers and pruners directly to the optimizer.
 """
 
 from .optimizer import OptunaDrivenOptimizer
+from .optimizer_reflow import ReflowOptunaDrivenOptimizer
 from .search_space import (
     OptunaSearchSpace,
     SimpleSearchSpace,
@@ -51,6 +52,7 @@ from optuna.pruners import (
 __all__ = [
     # Core optimizer
     "OptunaDrivenOptimizer",
+    "ReflowOptunaDrivenOptimizer",
     # Search spaces
     "OptunaSearchSpace",
     "SimpleSearchSpace",

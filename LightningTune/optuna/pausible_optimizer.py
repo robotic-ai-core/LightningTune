@@ -23,6 +23,7 @@ from lightning import LightningModule
 from lightning.pytorch.callbacks import Callback
 
 from .optimizer import OptunaDrivenOptimizer
+from .optimizer_reflow import ReflowOptunaDrivenOptimizer
 from .factories import create_sampler, create_pruner
 from .keyboard_monitor import KeyboardMonitor
 
@@ -65,6 +66,7 @@ class PausibleOptunaOptimizer:
         pruner_name: str = "median",
         save_every_n_trials: int = 10,
         enable_pause: bool = True,
+        use_reflow: bool = False,  # Option to use LightningReflow
         **optimizer_kwargs
     ):
         """
@@ -81,6 +83,7 @@ class PausibleOptunaOptimizer:
             pruner_name: Name of Optuna pruner to use
             save_every_n_trials: Save checkpoint every N trials
             enable_pause: Whether to enable 'p' key pause functionality
+            use_reflow: Whether to use LightningReflow for better environment setup and compilation
             **optimizer_kwargs: Additional arguments for OptunaDrivenOptimizer
         """
         self.base_config = base_config
@@ -93,6 +96,7 @@ class PausibleOptunaOptimizer:
         self.pruner_name = pruner_name
         self.save_every_n_trials = save_every_n_trials
         self.enable_pause = enable_pause
+        self.use_reflow = use_reflow
         self.optimizer_kwargs = optimizer_kwargs
         
         # Track progress
@@ -341,8 +345,9 @@ class PausibleOptunaOptimizer:
         # Extract direction to avoid duplicate argument
         direction = opt_kwargs.pop("direction", "minimize")
         
-        # Create optimizer
-        optimizer = OptunaDrivenOptimizer(
+        # Create optimizer (use Reflow version if requested)
+        OptimizerClass = ReflowOptunaDrivenOptimizer if self.use_reflow else OptunaDrivenOptimizer
+        optimizer = OptimizerClass(
             base_config=self.base_config,
             search_space=self.search_space,
             config_overrides=config_overrides,
