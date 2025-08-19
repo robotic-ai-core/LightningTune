@@ -12,7 +12,6 @@ import os
 import pickle
 import tempfile
 import re
-import time
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable
 import logging
@@ -235,14 +234,13 @@ class WandBOptunaOptimizer:
         """Wrapper for objective that logs to WandB."""
         # Create WandB run for this trial if logging is enabled
         if self.log_to_wandb:
-            # Add timestamp to make run name unique even after deletion
-            timestamp = int(time.time() * 1000)
             trial_run = wandb.init(
                 project=self.project_name,
-                name=f"{self.study_name}_trial_{trial.number}_{timestamp}",
+                name=f"{self.study_name}_trial_{trial.number}",
                 config=trial.params,
                 group=self.study_name,
                 job_type="trial",
+                # Let WandB auto-generate unique ID and handle name conflicts
             )
         
         try:

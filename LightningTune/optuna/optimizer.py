@@ -253,14 +253,11 @@ class OptunaDrivenOptimizer:
             wandb_logger = None
             if self.wandb_project:
                 from lightning.pytorch.loggers import WandbLogger
-                import time
                 # Create WandB logger for this trial
-                # Add timestamp to avoid conflicts with deleted runs
-                timestamp = int(time.time() * 1000)
                 wandb_logger = WandbLogger(
                     project=self.wandb_project,
-                    name=f"trial_{trial.number}_{timestamp}",
-                    id=f"{self.study_name}_trial_{trial.number}_{timestamp}",
+                    name=f"{self.study_name}_trial_{trial.number}",
+                    # Let WandB auto-generate unique ID and handle name conflicts
                     config=config,  # Log the full config including hyperparameters
                     log_model=self.upload_checkpoints,  # Control checkpoint uploads
                 )
