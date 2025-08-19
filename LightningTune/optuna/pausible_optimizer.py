@@ -221,7 +221,6 @@ class PausibleOptunaOptimizer:
             run = wandb.init(
                 project=self.wandb_project,
                 job_type="hpo_checkpoint",
-                reinit=True
             )
             artifact = wandb.Artifact(
                 f"{self.study_name}_checkpoint",
