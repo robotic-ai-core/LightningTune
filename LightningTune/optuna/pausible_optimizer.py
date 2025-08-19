@@ -455,12 +455,16 @@ class PausibleOptunaOptimizer:
         else:
             logger.info(f"\n✨ Optimization complete!")
         
-        # Print results
-        if study.best_trial:
-            logger.info(f"Best trial: {study.best_trial.number}")
-            logger.info(f"Best value: {study.best_value:.6f}")
-            logger.info("Best params:")
-            for key, value in study.best_params.items():
-                logger.info(f"  {key}: {value}")
+        # Print results (only if we have completed trials)
+        try:
+            if study.best_trial:
+                logger.info(f"Best trial: {study.best_trial.number}")
+                logger.info(f"Best value: {study.best_value:.6f}")
+                logger.info("Best params:")
+                for key, value in study.best_params.items():
+                    logger.info(f"  {key}: {value}")
+        except ValueError:
+            # No completed trials yet
+            logger.info("No trials completed successfully yet.")
         
         return study
