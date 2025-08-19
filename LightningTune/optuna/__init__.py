@@ -27,6 +27,12 @@ from .wandb_integration import (
     save_optuna_session,
     load_optuna_session,
 )
+from .factories import (
+    create_sampler,
+    create_pruner,
+    get_sampler_info,
+    get_pruner_info,
+)
 
 # Import Optuna components for convenience
 from optuna.samplers import (
@@ -60,6 +66,11 @@ __all__ = [
     "WandBOptunaOptimizer",
     "save_optuna_session",
     "load_optuna_session",
+    # Factory functions
+    "create_sampler",
+    "create_pruner",
+    "get_sampler_info",
+    "get_pruner_info",
     # Optuna samplers (for convenience)
     "TPESampler",
     "RandomSampler",
