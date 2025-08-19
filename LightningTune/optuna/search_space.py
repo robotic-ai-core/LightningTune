@@ -46,6 +46,14 @@ class SimpleSearchSpace(OptunaSearchSpace):
     """
     Simple search space defined by a dictionary of parameter ranges.
     
+    Supported parameter types:
+        - ("uniform", low, high): Uniform float distribution
+        - ("loguniform", low, high): Log-uniform float distribution
+        - ("int", low, high): Integer range
+        - ("int", low, high, step): Integer range with step
+        - ("categorical", [choices]): Categorical choices
+        - ("discrete_uniform", low, high, q): Discrete uniform with step q
+    
     Example:
         search_space = SimpleSearchSpace({
             "model.init_args.learning_rate": ("loguniform", 1e-5, 1e-3),

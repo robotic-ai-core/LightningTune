@@ -43,6 +43,7 @@ class OptunaDrivenOptimizer:
         datamodule_class: Optional[Type[pl.LightningDataModule]] = None,
         sampler: Optional[BaseSampler] = None,  # Direct Optuna sampler
         pruner: Optional[BasePruner] = None,    # Direct Optuna pruner
+        config_overrides: Optional[Dict[str, Any]] = None,  # Fixed config overrides
         study_name: Optional[str] = None,
         storage: Optional[str] = None,
         direction: str = "minimize",
@@ -66,6 +67,9 @@ class OptunaDrivenOptimizer:
                     If None, defaults to TPESampler()
             pruner: Optuna pruner (e.g., MedianPruner, HyperbandPruner, SuccessiveHalvingPruner)
                    If None, defaults to MedianPruner()
+            config_overrides: Optional dict of config values to override (not optimized).
+                             These are applied after base_config but before search_space suggestions.
+                             Useful for reducing epochs/data during HPO.
             study_name: Name for the Optuna study
             storage: Storage URL for Optuna (e.g., "sqlite:///study.db")
             direction: Optimization direction ("minimize" or "maximize")
@@ -95,6 +99,7 @@ class OptunaDrivenOptimizer:
         self.search_space = search_space
         self.model_class = model_class
         self.datamodule_class = datamodule_class
+        self.config_overrides = config_overrides or {}
         
         # Use provided sampler/pruner or defaults
         self.sampler = sampler if sampler is not None else TPESampler()
@@ -169,11 +174,15 @@ class OptunaDrivenOptimizer:
             Objective function that takes a trial and returns a metric value
         """
         def objective(trial: optuna.Trial) -> float:
-            # Suggest hyperparameters using the search space
+            # Start with base config
             config = self.base_config.copy()
-            suggested_params = self.search_space.suggest_params(trial)
             
-            # Merge suggested params into config
+            # Apply fixed config overrides first
+            if self.config_overrides:
+                config = self._merge_configs(config, self.config_overrides)
+            
+            # Then apply suggested hyperparameters from search space
+            suggested_params = self.search_space.suggest_params(trial)
             config = self._merge_configs(config, suggested_params)
             
             # Create model and datamodule
