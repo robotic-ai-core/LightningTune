@@ -325,7 +325,7 @@ def migration_comparison():
         search_space=search_space,
         model_class=MyLightningModule,
         datamodule_class=MyDataModule,
-        strategy=BOHBStrategy(),
+        strategy=# TPESampler with HyperbandPruner,
         n_trials=50,
         direction="minimize"
     )

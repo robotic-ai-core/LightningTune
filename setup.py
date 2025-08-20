@@ -21,14 +21,21 @@ setup(
     install_requires=[
         "pyyaml>=5.4",
         "optuna>=3.0.0",
+        "optuna-integration>=3.0.0",  # Base integration package
         "pytorch-lightning>=1.5.0",
     ],
     extras_require={
+        "botorch": [
+            "botorch>=0.8.0",  # BoTorch for Gaussian Process BO
+            "gpytorch>=1.9.0",  # Required by BoTorch
+        ],
         "full": [
             "wandb>=0.15.0",
             "plotly>=5.0.0",
             "scikit-optimize>=0.9.0",
             "scipy>=1.7.0",
+            "botorch>=0.8.0",  # Include BoTorch in full install
+            "gpytorch>=1.9.0",
         ],
         "test": [
             "pytest>=7.0.0",

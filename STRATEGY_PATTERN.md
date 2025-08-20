@@ -2,7 +2,7 @@
 
 ## Overview
 
-Lightning BOHB now uses the **Strategy Pattern** to support multiple optimization algorithms with the same interface. This allows you to easily switch between different HPO algorithms based on your needs.
+LightningTune now uses the **Strategy Pattern** to support multiple optimization algorithms with the same interface. This allows you to easily switch between different HPO algorithms based on your needs.
 
 ## Available Strategies
 

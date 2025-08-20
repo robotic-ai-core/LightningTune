@@ -236,7 +236,7 @@ optimizer = OptunaOptimizer(
     pruner=MedianPruner(n_warmup_steps=5)
 )
 
-# TPE with Hyperband (what people call "BOHB-like")
+# TPE with Hyperband (efficient multi-fidelity optimization)
 optimizer = OptunaOptimizer(
     base_config="config.yaml",
     search_space=search_space,

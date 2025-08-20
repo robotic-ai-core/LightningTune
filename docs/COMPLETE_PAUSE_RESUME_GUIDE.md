@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide documents the complete implementation of LightningReflow-style pause/resume functionality for Ray Tune hyperparameter optimization in the Lightning BOHB package.
+This guide documents the complete implementation of LightningReflow-style pause/resume functionality for Ray Tune hyperparameter optimization in the LightningTune package.
 
 ## Architecture
 

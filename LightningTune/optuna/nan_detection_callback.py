@@ -30,7 +30,7 @@ class NaNDetectionCallback(Callback):
         trial: optuna.Trial,
         monitor: str = "val_loss",
         check_train_loss: bool = True,
-        check_every_n_steps: int = 10,
+        check_every_n_steps: int = 1,  # Default to checking every step for immediate detection
         verbose: bool = True,
     ):
         """
@@ -40,7 +40,7 @@ class NaNDetectionCallback(Callback):
             trial: Optuna trial object
             monitor: Metric to monitor for NaN/Inf
             check_train_loss: Also check training loss for NaN/Inf
-            check_every_n_steps: Check frequency during training
+            check_every_n_steps: Check frequency during training (default: 1 for immediate detection)
             verbose: Whether to log when NaN/Inf is detected
         """
         self.trial = trial
