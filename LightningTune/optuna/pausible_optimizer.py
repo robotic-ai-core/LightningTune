@@ -430,9 +430,23 @@ class PausibleOptunaOptimizer:
                         self.should_pause = True
                         self.keyboard_monitor.clear_pause()
                         logger.info("\n⏸️  Pause requested ('p' pressed). Stopping after this trial...")
+                        if self.wandb_project:
+                            logger.info("   Study will be saved to WandB for easy resume")
+                        # Break out of loop to trigger save logic
+                        break
                 else:
                     # Trial failed (actual error, not pruning)
                     logger.info(f"Trial failed with error")
+                    
+                    # Check for pause request after failed trial
+                    if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
+                        self.should_pause = True
+                        self.keyboard_monitor.clear_pause()
+                        logger.info("\n⏸️  Pause requested ('p' pressed). Stopping after failed trial...")
+                        if self.wandb_project:
+                            logger.info("   Study will be saved to WandB for easy resume")
+                        # Break out of loop to trigger save logic
+                        break
                     
             except KeyboardInterrupt:
                 # Clean up keyboard monitor before terminating
@@ -443,7 +457,18 @@ class PausibleOptunaOptimizer:
                 
             except Exception as e:
                 logger.error(f"Error during trial: {e}")
-                # Continue with next trial
+                
+                # Check for pause request even after failed trial
+                if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
+                    self.should_pause = True
+                    self.keyboard_monitor.clear_pause()
+                    logger.info("\n⏸️  Pause requested ('p' pressed). Stopping after failed trial...")
+                    if self.wandb_project:
+                        logger.info("   Study will be saved to WandB for easy resume")
+                    # Break out of loop to trigger save logic
+                    break
+                    
+                # Continue with next trial if not pausing
                 continue
         
         # Stop keyboard monitoring
@@ -453,11 +478,14 @@ class PausibleOptunaOptimizer:
         # Handle pause save or final save
         study_was_saved = False
         if self.should_pause and self.wandb_project:
-            # ALWAYS save when pause is requested, regardless of last_saved_trial_count
+            # ALWAYS save when pause is requested, regardless of whether there are new trials
+            # This is critical: pause means user wants to stop and resume later
             logger.info(f"💾 Saving study state for pause (with {self.total_trials_completed} finished trials)")
             study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
             if study_was_saved:
                 last_saved_trial_count = self.total_trials_completed  # Update for consistency
+            else:
+                logger.error("⚠️  Failed to save study for pause - checkpoint may be incomplete")
         elif self.wandb_project and self.total_trials_completed > last_saved_trial_count:
             # Regular final save - only if we have new finished trials since last save
             logger.info(f"💾 Saving final state with {self.total_trials_completed} finished trials")
