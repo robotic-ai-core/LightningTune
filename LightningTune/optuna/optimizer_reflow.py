@@ -316,10 +316,20 @@ class ReflowOptunaDrivenOptimizer:
                     else:
                         logger.warning(f"Metric {self.metric} not found in callback_metrics")
                     
+                    # IMPORTANT: Let callbacks finish logging before closing WandB
+                    # The visualizer callback needs an active WandB run to upload videos
+                    # Force flush any pending WandB logs
+                    if wandb_logger:
+                        import wandb
+                        if wandb.run is not None:
+                            # Ensure all logs are uploaded before closing
+                            wandb.run.log_code()
+                            wandb.run.summary.update()
+                    
                     # Clean up torch compile state between trials
                     self._reset_torch_compile_state()
                     
-                    # Finalize WandB logger to ensure proper cleanup
+                    # Now finalize WandB logger after callbacks have completed
                     if wandb_logger:
                         wandb_logger.finalize("success")
                         import wandb
