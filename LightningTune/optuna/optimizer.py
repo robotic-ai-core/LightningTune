@@ -222,10 +222,35 @@ class OptunaDrivenOptimizer:
             # Setup callbacks
             callbacks = list(self.callbacks)
             
-            # Add pruning callback if pruner is not NopPruner
+            # Add pruning callback with NaN detection if pruner is not NopPruner
             if not isinstance(self.pruner, NopPruner):
-                pruning_callback = OptunaPruningCallback(trial, monitor=self.metric)
+                # Import NaN detection callback
+                try:
+                    from .nan_detection_callback import EnhancedOptunaPruningCallback
+                    # Use enhanced callback with NaN detection
+                    pruning_callback = EnhancedOptunaPruningCallback(
+                        trial, 
+                        monitor=self.metric,
+                        check_nan=True,
+                        verbose=True
+                    )
+                except ImportError:
+                    # Fallback to regular callback
+                    pruning_callback = OptunaPruningCallback(trial, monitor=self.metric)
                 callbacks.append(pruning_callback)
+            else:
+                # Even with NopPruner, add NaN detection
+                try:
+                    from .nan_detection_callback import NaNDetectionCallback
+                    nan_callback = NaNDetectionCallback(
+                        trial,
+                        monitor=self.metric,
+                        check_train_loss=True,
+                        verbose=True
+                    )
+                    callbacks.append(nan_callback)
+                except ImportError:
+                    pass  # NaN detection not available
             
             # Create trainer config
             trainer_config = config.get('trainer', {})
