@@ -379,7 +379,9 @@ class ReflowOptunaDrivenOptimizer:
                         if wandb.run is not None:
                             # Ensure all logs are uploaded before closing
                             wandb.run.log_code()
-                            wandb.run.summary.update()
+                            # Update summary with final metrics
+                            final_metrics = {"final_metric": metric_value}
+                            wandb.run.summary.update(final_metrics)
                     
                     # Clean up torch compile state between trials
                     self._reset_torch_compile_state()
