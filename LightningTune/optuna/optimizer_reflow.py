@@ -260,10 +260,39 @@ class ReflowOptunaDrivenOptimizer:
                     wandb.finish(quiet=True)
                 
                 from lightning.pytorch.loggers import WandbLogger
+                
+                # For WandB, log only the hyperparameters being optimized with simplified names
+                # This makes the UI much cleaner and easier to read
+                wandb_config = {}
+                
+                # Add suggested params with simplified names
+                if suggested_params:
+                    # Simplify parameter names for WandB display
+                    # Remove 'init_args' and top-level prefixes like 'model.', 'data.'
+                    for key, value in suggested_params.items():
+                        parts = key.split('.')
+                        clean_parts = [p for p in parts if p != 'init_args']
+                        if clean_parts and clean_parts[0] in ['model', 'data', 'trainer']:
+                            clean_parts = clean_parts[1:]
+                        # Further simplifications
+                        clean_parts = [
+                            p.replace('transformer_hparams', 'transformer')
+                             .replace('adapter_hparams', 'adapter')
+                             .replace('_hparams', '')
+                            for p in clean_parts
+                        ]
+                        clean_key = '.'.join(clean_parts) if clean_parts else key
+                        wandb_config[clean_key] = value
+                
+                # Also add trial metadata
+                wandb_config['trial_number'] = trial.number
+                wandb_config['sampler'] = self.sampler.__class__.__name__
+                wandb_config['pruner'] = self.pruner.__class__.__name__
+                
                 wandb_logger = WandbLogger(
                     project=self.wandb_project,
                     name=f"{self.study_name}_trial_{trial.number}",
-                    config=config,
+                    config=wandb_config,  # Use simplified config
                     log_model=self.upload_checkpoints,
                     reinit=True,  # Allow reinitialization for multiple trials
                 )
