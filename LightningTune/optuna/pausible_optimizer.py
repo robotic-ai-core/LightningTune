@@ -312,6 +312,7 @@ class PausibleOptunaOptimizer:
         if session_info:
             study = session_info["study"]
             self.total_trials_completed = session_info["total_trials_completed"]
+            self.should_pause = False  # Reset pause flag when resuming
             logger.info(f"📂 Resuming from {self.total_trials_completed} finished trials")
             
             # Verify study integrity - count finished trials (COMPLETE + PRUNED)
@@ -336,6 +337,7 @@ class PausibleOptunaOptimizer:
                 direction=self.optimizer_kwargs.get("direction", "minimize"),
                 storage=storage
             )
+            self.should_pause = False  # Ensure pause flag is reset for new study
             logger.info("🆕 Created new study")
         
         # Merge optimizer kwargs
@@ -385,7 +387,7 @@ class PausibleOptunaOptimizer:
             if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
                 self.should_pause = True
                 self.keyboard_monitor.clear_pause()
-                logger.info("\n⏸️  Pause requested ('p' pressed). Will pause after current trial completes...")
+                logger.info("\n⏸️  Pause requested ('p' pressed). Stopping before next trial...")
                 if self.wandb_project:
                     logger.info("   Study will be saved to WandB for easy resume")
                 break
@@ -422,6 +424,12 @@ class PausibleOptunaOptimizer:
                         if self.save_study_to_wandb(study, self.total_trials_completed):
                             last_saved_trial_count = self.total_trials_completed
                         trials_in_batch = 0
+                    
+                    # Check for pause request after trial completes
+                    if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
+                        self.should_pause = True
+                        self.keyboard_monitor.clear_pause()
+                        logger.info("\n⏸️  Pause requested ('p' pressed). Stopping after this trial...")
                 else:
                     # Trial failed (actual error, not pruning)
                     logger.info(f"Trial failed with error")
@@ -442,24 +450,36 @@ class PausibleOptunaOptimizer:
         if self.keyboard_monitor:
             self.keyboard_monitor.stop()
         
-        # Final save - only if we have new finished trials since last save
-        if self.wandb_project and self.total_trials_completed > last_saved_trial_count:
+        # Handle pause save or final save
+        study_was_saved = False
+        if self.should_pause and self.wandb_project:
+            # ALWAYS save when pause is requested, regardless of last_saved_trial_count
+            logger.info(f"💾 Saving study state for pause (with {self.total_trials_completed} finished trials)")
+            study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
+            if study_was_saved:
+                last_saved_trial_count = self.total_trials_completed  # Update for consistency
+        elif self.wandb_project and self.total_trials_completed > last_saved_trial_count:
+            # Regular final save - only if we have new finished trials since last save
             logger.info(f"💾 Saving final state with {self.total_trials_completed} finished trials")
-            self.save_study_to_wandb(study, self.total_trials_completed)
-        elif self.wandb_project:
+            study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
+        elif self.wandb_project and not self.should_pause:
             logger.info(f"ℹ️  No new finished trials to save since last checkpoint")
         
         if self.should_pause:
             logger.info(f"\n⏸️  Paused after {self.total_trials_completed} finished trials")
             if self.wandb_project:
-                logger.info(f"📝 To resume, run:")
-                import sys
-                # Reconstruct the command line with resume flag
-                script_name = sys.argv[0] if sys.argv else "world_model_hpo_optuna.py"
-                resume_cmd = f"python {script_name} --wandb {self.wandb_project} --resume-from latest"
-                if self.study_name != "optuna_study":
-                    resume_cmd += f" --study-name {self.study_name}"
-                logger.info(f"   {resume_cmd}")
+                if study_was_saved:
+                    logger.info(f"📝 To resume, run:")
+                    import sys
+                    # Reconstruct the command line with resume flag
+                    script_name = sys.argv[0] if sys.argv else "world_model_hpo_optuna.py"
+                    resume_cmd = f"python {script_name} --wandb {self.wandb_project} --resume-from latest"
+                    if self.study_name != "optuna_study":
+                        resume_cmd += f" --study-name {self.study_name}"
+                    logger.info(f"   {resume_cmd}")
+                else:
+                    logger.info(f"⚠️  Failed to save study checkpoint - cannot resume from this point")
+                    logger.info(f"   Check logs above for save errors")
             else:
                 logger.info(f"⚠️  No WandB project configured - checkpoint not saved")
                 logger.info(f"   To enable resume, use --wandb <project-name>")
