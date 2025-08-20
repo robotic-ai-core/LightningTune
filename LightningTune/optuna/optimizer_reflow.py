@@ -238,8 +238,7 @@ class ReflowOptunaDrivenOptimizer:
                         trial, 
                         monitor=self.metric,
                         check_nan=True,
-                        verbose=True,
-                        report_every_n_steps=1  # Also check at every step for faster pruning
+                        verbose=True
                     )
                 except ImportError:
                     # Fallback to regular callback
@@ -253,7 +252,7 @@ class ReflowOptunaDrivenOptimizer:
                         trial,
                         monitor=self.metric,
                         check_train_loss=True,
-                        check_every_n_steps=10,  # Check every 10 steps
+                        check_every_n_steps=100,  # Check every 100 steps (checks all loss keys)
                         verbose=True
                     )
                     callbacks.append(nan_callback)
