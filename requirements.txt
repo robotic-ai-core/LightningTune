@@ -1,0 +1,18 @@
+# Core requirements for LightningTune
+
+# Configuration
+pyyaml>=5.4
+
+# Optimization
+optuna>=3.0.0
+optuna-integration>=3.0.0  # Base integration package for advanced samplers
+
+# Deep Learning
+pytorch-lightning>=1.5.0
+
+# Note: PyTorch should be installed separately based on your CUDA version
+# See: https://pytorch.org/get-started/locally/
+
+# Optional: For BoTorchSampler support (Gaussian Process-based Bayesian Optimization)
+# Install with: pip install LightningTune[botorch]
+# Or manually: pip install botorch gpytorch
