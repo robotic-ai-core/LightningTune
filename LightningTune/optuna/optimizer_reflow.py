@@ -216,12 +216,19 @@ class ReflowOptunaDrivenOptimizer:
             # Setup WandB logger if requested
             wandb_logger = None
             if self.wandb_project:
+                # Ensure any previous WandB run is finished
+                import wandb
+                if wandb.run is not None:
+                    logger.info(f"Finishing previous WandB run before starting trial {trial.number}")
+                    wandb.finish(quiet=True)
+                
                 from lightning.pytorch.loggers import WandbLogger
                 wandb_logger = WandbLogger(
                     project=self.wandb_project,
                     name=f"{self.study_name}_trial_{trial.number}",
                     config=config,
                     log_model=self.upload_checkpoints,
+                    reinit=True,  # Allow reinitialization for multiple trials
                 )
                 # Add to trainer_config for both Reflow and vanilla
                 trainer_config['logger'] = wandb_logger
@@ -266,29 +273,47 @@ class ReflowOptunaDrivenOptimizer:
                     result = reflow.fit()
                     
                     # Get the metric value from trainer
+                    metric_value = float('inf') if self.direction == "minimize" else float('-inf')
                     if hasattr(reflow.trainer, 'callback_metrics') and self.metric in reflow.trainer.callback_metrics:
-                        return reflow.trainer.callback_metrics[self.metric].item()
+                        metric_value = reflow.trainer.callback_metrics[self.metric].item()
                     else:
                         logger.warning(f"Metric {self.metric} not found in callback_metrics")
-                        return float('inf') if self.direction == "minimize" else float('-inf')
+                    
+                    # Finalize WandB logger to ensure proper cleanup
+                    if wandb_logger:
+                        wandb_logger.finalize("success")
+                        import wandb
+                        wandb.finish(quiet=True)
+                    
+                    return metric_value
                     
                 except optuna.TrialPruned:
+                    # Clean up WandB before raising
+                    if wandb_logger:
+                        wandb_logger.finalize("pruned")
+                        import wandb
+                        wandb.finish(quiet=True)
                     raise
                 except Exception as e:
                     logger.error(f"Trial {trial.number} failed with Reflow: {e}")
+                    # Clean up WandB before fallback
+                    if wandb_logger:
+                        wandb_logger.finalize("failed")
+                        import wandb
+                        wandb.finish(quiet=True)
                     # Optionally fall back to vanilla Lightning
                     if self.verbose:
                         logger.info("Falling back to vanilla Lightning")
                     # Logger should already be in trainer_config
-                    return self._run_vanilla_lightning(config, callbacks, trainer_config, trial)
+                    return self._run_vanilla_lightning(config, callbacks, trainer_config, trial, wandb_logger)
             else:
                 # Use vanilla Lightning (original implementation)
                 # Logger should already be in trainer_config from above
-                return self._run_vanilla_lightning(config, callbacks, trainer_config, trial)
+                return self._run_vanilla_lightning(config, callbacks, trainer_config, trial, wandb_logger)
         
         return objective
     
-    def _run_vanilla_lightning(self, config, callbacks, trainer_config, trial):
+    def _run_vanilla_lightning(self, config, callbacks, trainer_config, trial, wandb_logger=None):
         """Run training with vanilla Lightning (fallback or when use_reflow=False)."""
         # Extract model and data configs
         model_config = config.get('model', {})
@@ -328,17 +353,35 @@ class ReflowOptunaDrivenOptimizer:
             else:
                 trainer.fit(model)
             
-            # Return the metric value
+            # Get the metric value
+            metric_value = float('inf') if self.direction == "minimize" else float('-inf')
             if self.metric in trainer.callback_metrics:
-                return trainer.callback_metrics[self.metric].item()
+                metric_value = trainer.callback_metrics[self.metric].item()
             else:
                 logger.warning(f"Metric {self.metric} not found in callback_metrics")
-                return float('inf') if self.direction == "minimize" else float('-inf')
+            
+            # Finalize WandB logger to ensure proper cleanup
+            if wandb_logger:
+                wandb_logger.finalize("success")
+                import wandb
+                wandb.finish(quiet=True)
+            
+            return metric_value
             
         except optuna.TrialPruned:
+            # Clean up WandB before raising
+            if wandb_logger:
+                wandb_logger.finalize("pruned")
+                import wandb
+                wandb.finish(quiet=True)
             raise
         except Exception as e:
             logger.error(f"Trial {trial.number} failed: {e}")
+            # Clean up WandB on failure
+            if wandb_logger:
+                wandb_logger.finalize("failed")
+                import wandb
+                wandb.finish(quiet=True)
             return float('inf') if self.direction == "minimize" else float('-inf')
     
     def optimize(self) -> optuna.Study:
