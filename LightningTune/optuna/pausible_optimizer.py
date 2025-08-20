@@ -231,7 +231,14 @@ class PausibleOptunaOptimizer:
                 "best_value": study.best_value if study.best_trial else None,
                 "best_trial_number": study.best_trial.number if study.best_trial else None,
             }
-            run.log_artifact(artifact)
+            # Log and wait for artifact to upload
+            logged_artifact = run.log_artifact(artifact, aliases=["latest"])
+            
+            # IMPORTANT: Use wait() to ensure artifact uploads before we exit
+            # This blocks until the artifact is fully uploaded to WandB
+            logged_artifact.wait()
+            
+            # Now we can safely finish the run
             run.finish()
             
             logger.info(f"✅ Study saved to WandB: {self.study_name}_checkpoint (v{trials_completed})")
@@ -313,7 +320,13 @@ class PausibleOptunaOptimizer:
             study = session_info["study"]
             self.total_trials_completed = session_info["total_trials_completed"]
             self.should_pause = False  # Reset pause flag when resuming
-            logger.info(f"📂 Resuming from {self.total_trials_completed} finished trials")
+            progress_percent = (self.total_trials_completed / n_trials) * 100
+            remaining = n_trials - self.total_trials_completed
+            logger.info(f"\n{'='*60}")
+            logger.info(f"📂 RESUMING OPTIMIZATION")
+            logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials already complete ({progress_percent:.1f}%)")
+            logger.info(f"Remaining: {remaining} trials to run")
+            logger.info(f"{'='*60}")
             
             # Verify study integrity - count finished trials (COMPLETE + PRUNED)
             finished_count = len([t for t in study.trials 
@@ -338,7 +351,17 @@ class PausibleOptunaOptimizer:
                 storage=storage
             )
             self.should_pause = False  # Ensure pause flag is reset for new study
-            logger.info("🆕 Created new study")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"🆕 STARTING NEW OPTIMIZATION")
+            logger.info(f"Study name: {self.study_name}")
+            logger.info(f"Total trials to run: {n_trials}")
+            logger.info(f"Sampler: {self.sampler_name}")
+            logger.info(f"Pruner: {self.pruner_name}")
+            logger.info(f"Direction: {self.optimizer_kwargs.get('direction', 'minimize')}")
+            if self.wandb_project:
+                logger.info(f"WandB project: {self.wandb_project}")
+                logger.info(f"Checkpoint frequency: every {self.save_every_n_trials} trials")
+            logger.info(f"{'='*60}")
         
         # Merge optimizer kwargs
         opt_kwargs = self.optimizer_kwargs.copy()
@@ -393,6 +416,13 @@ class PausibleOptunaOptimizer:
                 break
             
             try:
+                # Show clear progress before starting trial
+                trial_number = self.total_trials_completed + 1
+                progress_percent = (self.total_trials_completed / n_trials) * 100
+                logger.info(f"\n{'='*60}")
+                logger.info(f"📊 Starting Trial {trial_number} of {n_trials} ({progress_percent:.1f}% complete)")
+                logger.info(f"{'='*60}")
+                
                 # Run single trial
                 study.optimize(objective, n_trials=1, show_progress_bar=False)
                 
@@ -408,16 +438,25 @@ class PausibleOptunaOptimizer:
                     
                     # Get the latest trial to check if it was pruned
                     latest_trial = study.trials[-1]
-                    status = "completed" if latest_trial.state == optuna.trial.TrialState.COMPLETE else "pruned"
+                    status = "✅ COMPLETE" if latest_trial.state == optuna.trial.TrialState.COMPLETE else "⏭️ PRUNED"
                     
-                    # Log progress
+                    # Calculate updated progress
+                    progress_percent = (self.total_trials_completed / n_trials) * 100
+                    remaining_trials = n_trials - self.total_trials_completed
+                    
+                    # Log progress with clearer formatting
+                    logger.info(f"\n{'─'*60}")
+                    logger.info(f"Trial {trial_number} Result: {status}")
+                    logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials complete ({progress_percent:.1f}%)")
+                    logger.info(f"Remaining: {remaining_trials} trials")
+                    
                     if study.best_trial:
                         logger.info(
-                            f"Trial {self.total_trials_completed}/{n_trials} ({status}) | "
-                            f"Best: {study.best_value:.6f} (trial {study.best_trial.number})"
+                            f"Current Best: {study.best_value:.6f} (from trial {study.best_trial.number})"
                         )
                     else:
-                        logger.info(f"Trial {self.total_trials_completed}/{n_trials} ({status})")
+                        logger.info(f"Current Best: No successful trials yet")
+                    logger.info(f"{'─'*60}")
                     
                     # Periodic save (only if we have new finished trials and WandB is configured)
                     if self.wandb_project and trials_in_batch >= self.save_every_n_trials:
@@ -436,7 +475,10 @@ class PausibleOptunaOptimizer:
                         break
                 else:
                     # Trial failed (actual error, not pruning)
-                    logger.info(f"Trial failed with error")
+                    logger.info(f"\n{'─'*60}")
+                    logger.info(f"Trial {trial_number} Result: ❌ FAILED")
+                    logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials complete ({progress_percent:.1f}%)")
+                    logger.info(f"{'─'*60}")
                     
                     # Check for pause request after failed trial
                     if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
@@ -494,10 +536,13 @@ class PausibleOptunaOptimizer:
             logger.info(f"ℹ️  No new finished trials to save since last checkpoint")
         
         if self.should_pause:
-            logger.info(f"\n⏸️  Paused after {self.total_trials_completed} finished trials")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"⏸️  OPTIMIZATION PAUSED")
+            logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials complete ({(self.total_trials_completed/n_trials)*100:.1f}%)")
+            logger.info(f"Remaining: {n_trials - self.total_trials_completed} trials")
             if self.wandb_project:
                 if study_was_saved:
-                    logger.info(f"📝 To resume, run:")
+                    logger.info(f"\n📝 To resume, run:")
                     import sys
                     # Reconstruct the command line with resume flag
                     script_name = sys.argv[0] if sys.argv else "world_model_hpo_optuna.py"
@@ -511,8 +556,12 @@ class PausibleOptunaOptimizer:
             else:
                 logger.info(f"⚠️  No WandB project configured - checkpoint not saved")
                 logger.info(f"   To enable resume, use --wandb <project-name>")
+            logger.info(f"{'='*60}")
         else:
-            logger.info(f"\n✨ Optimization complete!")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"✨ OPTIMIZATION COMPLETE!")
+            logger.info(f"Total trials run: {self.total_trials_completed}/{n_trials} ({100.0:.1f}%)")
+            logger.info(f"{'='*60}")
         
         # Print results (only if we have completed trials)
         try:
