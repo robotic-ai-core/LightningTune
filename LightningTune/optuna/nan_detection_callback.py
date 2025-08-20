@@ -30,7 +30,7 @@ class NaNDetectionCallback(Callback):
         trial: optuna.Trial,
         monitor: str = "val_loss",
         check_train_loss: bool = True,
-        check_every_n_steps: int = 1,  # Default to checking every step for immediate detection
+        check_every_n_steps: int = 10,  # Check every 10 steps to balance detection speed and overhead
         verbose: bool = True,
     ):
         """
@@ -40,7 +40,7 @@ class NaNDetectionCallback(Callback):
             trial: Optuna trial object
             monitor: Metric to monitor for NaN/Inf
             check_train_loss: Also check training loss for NaN/Inf
-            check_every_n_steps: Check frequency during training (default: 1 for immediate detection)
+            check_every_n_steps: Check frequency during training (default: 10)
             verbose: Whether to log when NaN/Inf is detected
         """
         self.trial = trial
@@ -83,24 +83,45 @@ class NaNDetectionCallback(Callback):
         if self.step_count % self.check_every_n_steps != 0:
             return
         
-        # Check training loss from outputs
+        # Try multiple ways to get the training loss
+        loss = None
+        
+        # Method 1: Check outputs (may be None in some Lightning versions)
         if outputs is not None:
-            loss = None
             if isinstance(outputs, dict) and 'loss' in outputs:
                 loss = outputs['loss']
             elif isinstance(outputs, torch.Tensor):
                 loss = outputs
+        
+        # Method 2: Check trainer's callback metrics for current train loss
+        if loss is None and hasattr(trainer, 'callback_metrics'):
+            # Look for train/loss or just loss in callback metrics
+            for key in ['train/loss', 'loss', 'train_loss']:
+                if key in trainer.callback_metrics:
+                    loss = trainer.callback_metrics[key]
+                    break
+        
+        # Method 3: Check the logged metrics from trainer
+        if loss is None and hasattr(trainer, 'logged_metrics'):
+            for key in ['train/loss', 'loss', 'train_loss']:
+                if key in trainer.logged_metrics:
+                    loss = trainer.logged_metrics[key]
+                    break
+        
+        # If we found a loss value, check it
+        if loss is not None:
+            if isinstance(loss, torch.Tensor):
+                loss_value = loss.item()
+            else:
+                loss_value = float(loss)
             
-            if loss is not None:
-                if isinstance(loss, torch.Tensor):
-                    loss_value = loss.item()
-                else:
-                    loss_value = float(loss)
-                
-                if self._check_value(loss_value, "training loss"):
-                    # Mark trial as failed and raise TrialPruned
-                    self.trial.set_user_attr('failed_reason', 'nan_or_inf_loss')
-                    raise optuna.TrialPruned(f"Training loss is NaN/Inf at step {trainer.global_step}")
+            if self._check_value(loss_value, "training loss"):
+                # Mark trial as failed and raise TrialPruned
+                self.trial.set_user_attr('failed_reason', 'nan_or_inf_loss')
+                raise optuna.TrialPruned(f"Training loss is NaN/Inf at step {trainer.global_step}")
+        elif self.verbose and self.step_count == 1:
+            # Log once if we can't find the loss (for debugging)
+            logger.debug(f"NaN detector: Could not find training loss in outputs or metrics at step {trainer.global_step}")
     
     def on_validation_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         """Check validation metrics for NaN/Inf."""

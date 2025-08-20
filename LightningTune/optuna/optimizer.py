@@ -246,7 +246,7 @@ class OptunaDrivenOptimizer:
                         trial,
                         monitor=self.metric,
                         check_train_loss=True,
-                        check_every_n_steps=1,  # Check EVERY step for immediate detection
+                        check_every_n_steps=10,  # Check every 10 steps
                         verbose=True
                     )
                     callbacks.append(nan_callback)
