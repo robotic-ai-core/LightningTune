@@ -23,6 +23,17 @@ from .callbacks import (
     OptunaProgressCallback,
     OptunaEarlyStoppingCallback,
 )
+
+# Import NaN detection callbacks if available
+try:
+    from .nan_detection_callback import (
+        NaNDetectionCallback,
+        EnhancedOptunaPruningCallback,
+    )
+except ImportError:
+    # NaN detection not available
+    NaNDetectionCallback = None
+    EnhancedOptunaPruningCallback = None
 from .wandb_integration import (
     WandBOptunaOptimizer,
     save_optuna_session,
@@ -64,6 +75,8 @@ __all__ = [
     "OptunaCheckpointCallback",
     "OptunaProgressCallback",
     "OptunaEarlyStoppingCallback",
+    "NaNDetectionCallback",
+    "EnhancedOptunaPruningCallback",
     # WandB integration
     "WandBOptunaOptimizer",
     "save_optuna_session",
