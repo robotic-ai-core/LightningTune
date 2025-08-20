@@ -18,6 +18,7 @@ import logging
 import optuna
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.pruners import BasePruner, MedianPruner, NopPruner
+import torch
 import lightning as L
 from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import Callback
@@ -149,6 +150,42 @@ class ReflowOptunaDrivenOptimizer:
             except Exception as e:
                 logger.warning(f"Could not clean up temporary directory: {e}")
     
+    def _reset_torch_compile_state(self):
+        """Reset torch compile state between trials to prevent interference."""
+        try:
+            import gc
+            
+            # Reset torch._dynamo state if available
+            if hasattr(torch, '_dynamo'):
+                # Clear dynamo cache
+                if hasattr(torch._dynamo, 'reset'):
+                    torch._dynamo.reset()
+                
+                # Reset config to defaults if modified
+                if hasattr(torch._dynamo, 'config'):
+                    # Common settings that might be modified
+                    default_settings = {
+                        'cache_size_limit': 64,
+                        'recompile_limit': 8,
+                    }
+                    for key, default_value in default_settings.items():
+                        if hasattr(torch._dynamo.config, key):
+                            setattr(torch._dynamo.config, key, default_value)
+            
+            # Clear CUDA cache if using GPU
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            
+            # Force garbage collection
+            gc.collect()
+            
+            if self.verbose:
+                logger.debug("Reset torch compile state between trials")
+                
+        except Exception as e:
+            logger.debug(f"Could not reset torch compile state: {e}")
+    
     def _load_config(self, config_source: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
         """Load configuration from file or dict."""
         if isinstance(config_source, dict):
@@ -279,6 +316,9 @@ class ReflowOptunaDrivenOptimizer:
                     else:
                         logger.warning(f"Metric {self.metric} not found in callback_metrics")
                     
+                    # Clean up torch compile state between trials
+                    self._reset_torch_compile_state()
+                    
                     # Finalize WandB logger to ensure proper cleanup
                     if wandb_logger:
                         wandb_logger.finalize("success")
@@ -288,6 +328,8 @@ class ReflowOptunaDrivenOptimizer:
                     return metric_value
                     
                 except optuna.TrialPruned:
+                    # Clean up torch compile state
+                    self._reset_torch_compile_state()
                     # Clean up WandB before raising
                     if wandb_logger:
                         wandb_logger.finalize("pruned")
@@ -296,6 +338,8 @@ class ReflowOptunaDrivenOptimizer:
                     raise
                 except Exception as e:
                     logger.error(f"Trial {trial.number} failed with Reflow: {e}")
+                    # Clean up torch compile state
+                    self._reset_torch_compile_state()
                     # Clean up WandB before fallback
                     if wandb_logger:
                         wandb_logger.finalize("failed")
