@@ -2,7 +2,7 @@
 
 ## Overview
 
-Lightning BOHB now supports **clean dependency injection** where optimization strategies are configured as independent objects and injected directly into the optimizer. This provides better separation of concerns, type safety, and flexibility.
+LightningTune now supports **clean dependency injection** where optimization strategies are configured as independent objects and injected directly into the optimizer. This provides better separation of concerns, type safety, and flexibility.
 
 ## Benefits
 
@@ -38,7 +38,7 @@ optimizer = ConfigDrivenOptimizer(strategy=strategy)
 ### 4. **Easy Strategy Swapping**
 ```python
 # Easy to compare strategies
-for strategy in [RandomSearchStrategy(), OptunaStrategy(), BOHBStrategy()]:
+for strategy in [RandomSearchStrategy(), OptunaStrategy(), # TPESampler with HyperbandPruner]:
     optimizer = ConfigDrivenOptimizer(strategy=strategy, ...)
     results = optimizer.run()
 ```
@@ -182,7 +182,7 @@ def select_strategy(time_budget_hrs: float, n_gpus: int):
     
     else:
         # Thorough optimization
-        return BOHBStrategy()
+        return # TPESampler with HyperbandPruner
 
 # Select and use
 strategy = select_strategy(time_budget=2.0, n_gpus=4)
@@ -197,7 +197,7 @@ Compare multiple strategies easily:
 strategies = {
     "random": RandomSearchStrategy(num_samples=50),
     "optuna": OptunaStrategy(num_samples=50),
-    "bohb": BOHBStrategy(),
+    "bohb": # TPESampler with HyperbandPruner,
 }
 
 results = {}
@@ -313,7 +313,7 @@ class ProgressiveStrategy:
         self.stages = [
             (RandomSearchStrategy(num_samples=20), 1.0),  # 1 hour
             (OptunaStrategy(num_samples=50), 2.0),        # 2 hours  
-            (BOHBStrategy(), 4.0),                        # 4 hours
+            (# TPESampler with HyperbandPruner, 4.0),                        # 4 hours
         ]
     
     def run(self, base_config_source, search_space):

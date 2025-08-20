@@ -2,7 +2,7 @@
 
 ## Overview
 
-Lightning BOHB now provides **LightningReflow-style pause/resume capabilities** for Ray Tune hyperparameter optimization sessions. Press 'p' during optimization to pause all trials at their next validation boundaries, exit safely, and resume later with a single command.
+LightningTune now provides **LightningReflow-style pause/resume capabilities** for Ray Tune hyperparameter optimization sessions. Press 'p' during optimization to pause all trials at their next validation boundaries, exit safely, and resume later with a single command.
 
 ## Features
 

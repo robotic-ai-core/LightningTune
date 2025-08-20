@@ -1,8 +1,8 @@
-# Lightning BOHB Architecture
+# LightningTune Architecture
 
 ## Overview
 
-Lightning BOHB is a **config-driven** hyperparameter optimization submodule that integrates BOHB with PyTorch Lightning projects through LightningReflow.
+LightningTune is a **config-driven** hyperparameter optimization submodule that integrates BOHB with PyTorch Lightning projects through LightningReflow.
 
 ## Core Design Philosophy
 

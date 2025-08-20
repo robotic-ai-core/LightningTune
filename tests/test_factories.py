@@ -4,6 +4,11 @@ Tests for factory functions that create Optuna samplers and pruners.
 
 import pytest
 from optuna.samplers import BaseSampler, TPESampler, RandomSampler, CmaEsSampler, GridSampler
+try:
+    from optuna.integration.botorch import BoTorchSampler
+    BOTORCH_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    BOTORCH_AVAILABLE = False
 from optuna.pruners import BasePruner, MedianPruner, HyperbandPruner, SuccessiveHalvingPruner, NopPruner
 import sys
 from pathlib import Path
@@ -40,6 +45,18 @@ class TestSamplerFactory:
         sampler = create_sampler("grid")
         assert isinstance(sampler, GridSampler)
         
+    @pytest.mark.skipif(not BOTORCH_AVAILABLE, reason="BoTorch not installed")
+    def test_create_botorch_sampler(self):
+        """Test creating BoTorch sampler if available."""
+        sampler = create_sampler("botorch")
+        assert isinstance(sampler, BoTorchSampler)
+        
+    def test_botorch_not_available_fallback(self):
+        """Test that botorch sampler fails gracefully if not installed."""
+        if not BOTORCH_AVAILABLE:
+            with pytest.raises(ValueError, match="Unknown sampler"):
+                create_sampler("botorch")
+        
     def test_sampler_with_seed(self):
         """Test creating sampler with seed."""
         sampler = create_sampler("tpe", seed=42)
@@ -65,6 +82,10 @@ class TestSamplerFactory:
         assert "random" in info
         assert "grid" in info
         assert "cmaes" in info
+        # BoTorch info should be present only if available
+        if BOTORCH_AVAILABLE:
+            assert "botorch" in info
+            assert "GP-based" in info["botorch"]
 
 
 class TestPrunerFactory:

@@ -60,6 +60,15 @@ def create_sampler(
         "cmaes": lambda: CmaEsSampler(**kwargs),
     }
     
+    # Add BoTorchSampler (requires optuna-integration with botorch extra)
+    try:
+        from optuna.integration.botorch import BoTorchSampler
+        samplers["botorch"] = lambda: BoTorchSampler(**kwargs)
+    except (ImportError, ModuleNotFoundError):
+        # BoTorch has heavy dependencies (torch, gpytorch, botorch)
+        # so we keep it optional even though optuna-integration is installed
+        pass
+    
     if sampler_name not in samplers:
         raise ValueError(
             f"Unknown sampler: {sampler_name}. "
@@ -140,12 +149,21 @@ def get_sampler_info() -> Dict[str, str]:
     Returns:
         Dictionary mapping sampler names to descriptions
     """
-    return {
+    info = {
         "tpe": "Tree-structured Parzen Estimator - Good general purpose sampler",
         "random": "Random Search - Simple baseline, good for parallel execution",
         "grid": "Grid Search - Exhaustive search over discrete space",
         "cmaes": "CMA-ES - Evolution strategy, good for continuous parameters",
     }
+    
+    # Check if BoTorchSampler is actually available
+    try:
+        from optuna.integration.botorch import BoTorchSampler
+        info["botorch"] = "BoTorch GP-based BO - Best for expensive evaluations with continuous params"
+    except (ImportError, ModuleNotFoundError):
+        pass
+    
+    return info
 
 
 def get_pruner_info() -> Dict[str, str]:

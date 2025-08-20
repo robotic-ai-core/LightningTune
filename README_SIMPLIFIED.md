@@ -8,9 +8,9 @@ LightningTune now uses direct dependency injection for Optuna's samplers and pru
 
 ### Before (with strategy abstraction):
 ```python
-from LightningTune import BOHBStrategy  # Misleading - Optuna doesn't have BOHB!
+# Note: Use TPESampler with HyperbandPruner for multi-fidelity optimization
 
-strategy = BOHBStrategy()
+strategy = # TPESampler with HyperbandPruner
 optimizer = OptunaDrivenOptimizer(..., strategy=strategy)
 ```
 
@@ -73,7 +73,7 @@ print(f"Best params: {study.best_params}")
 
 ## Common Configurations
 
-### TPE with Hyperband (NOT BOHB!)
+### TPE with Hyperband (multi-fidelity optimization)
 ```python
 sampler = TPESampler()
 pruner = HyperbandPruner(min_resource=1, max_resource=100, reduction_factor=3)
@@ -105,7 +105,7 @@ Note: This is NOT ASHA. Optuna's SHA is synchronous, not asynchronous.
 # TPE with median pruning (default)
 python world_model_hpo_optuna.py
 
-# TPE with Hyperband (similar to BOHB but NOT BOHB)
+# TPE with Hyperband (efficient multi-fidelity optimization)
 python world_model_hpo_optuna.py --sampler tpe --pruner hyperband
 
 # Random search without pruning
@@ -140,8 +140,8 @@ If you were using the old strategy-based approach:
 
 ```python
 # Old way
-from LightningTune import BOHBStrategy
-strategy = BOHBStrategy()
+# Note: Use TPESampler with HyperbandPruner for multi-fidelity optimization
+strategy = # TPESampler with HyperbandPruner
 optimizer = OptunaDrivenOptimizer(..., strategy=strategy)
 
 # New way

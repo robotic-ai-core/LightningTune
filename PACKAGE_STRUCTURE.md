@@ -1,4 +1,4 @@
-# Lightning BOHB Package Structure
+# LightningTune Package Structure
 
 ## Directory Organization
 
