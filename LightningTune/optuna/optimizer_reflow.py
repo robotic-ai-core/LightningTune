@@ -176,6 +176,10 @@ class ReflowOptunaDrivenOptimizer:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
+                # Reset CUDA state more aggressively
+                torch.cuda.ipc_collect()
+                # Reset all CUDA RNG states
+                torch.cuda.manual_seed_all(torch.initial_seed())
             
             # Force garbage collection
             gc.collect()
