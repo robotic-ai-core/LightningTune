@@ -324,7 +324,7 @@ class ReflowOptunaDrivenOptimizer:
                     name=f"{self.study_name}_trial_{trial.number}",
                     config=wandb_config,  # Use simplified config
                     log_model=self.upload_checkpoints,
-                    finish_previous=True,  # Finish any previous run before starting new one
+                    reinit="finish_previous",  # Finish any previous run before starting new one
                 )
                 # Add to trainer_config for both Reflow and vanilla
                 trainer_config['logger'] = wandb_logger
