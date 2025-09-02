@@ -409,8 +409,8 @@ class PausibleOptunaOptimizer:
             # Check for keyboard pause request before starting trial
             if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
                 self.should_pause = True
-                self.keyboard_monitor.clear_pause()
-                logger.info("\n⏸️  Pause requested ('p' pressed). Stopping before next trial...")
+                # Don't clear pause here - let keyboard monitor handle the toggle
+                logger.info("\n⏸️  Executing pause at trial boundary...")
                 if self.wandb_project:
                     logger.info("   Study will be saved to WandB for easy resume")
                 break
@@ -423,7 +423,7 @@ class PausibleOptunaOptimizer:
                 logger.info(f"📊 Starting Trial {trial_number} of {n_trials} ({progress_percent:.1f}% complete)")
                 logger.info(f"{'='*60}")
                 
-                # Run single trial
+                # Run single trial (no progress bar for single trial)
                 study.optimize(objective, n_trials=1, show_progress_bar=False)
                 
                 # Check if a new trial was actually finished (COMPLETE or PRUNED)
@@ -467,8 +467,8 @@ class PausibleOptunaOptimizer:
                     # Check for pause request after trial completes
                     if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
                         self.should_pause = True
-                        self.keyboard_monitor.clear_pause()
-                        logger.info("\n⏸️  Pause requested ('p' pressed). Stopping after this trial...")
+                        # Don't clear pause here - let keyboard monitor handle the toggle
+                        logger.info("\n⏸️  Executing pause after trial completion...")
                         if self.wandb_project:
                             logger.info("   Study will be saved to WandB for easy resume")
                         # Break out of loop to trigger save logic
@@ -483,8 +483,8 @@ class PausibleOptunaOptimizer:
                     # Check for pause request after failed trial
                     if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
                         self.should_pause = True
-                        self.keyboard_monitor.clear_pause()
-                        logger.info("\n⏸️  Pause requested ('p' pressed). Stopping after failed trial...")
+                        # Don't clear pause here - let keyboard monitor handle the toggle
+                        logger.info("\n⏸️  Executing pause after failed trial...")
                         if self.wandb_project:
                             logger.info("   Study will be saved to WandB for easy resume")
                         # Break out of loop to trigger save logic
@@ -500,11 +500,11 @@ class PausibleOptunaOptimizer:
             except Exception as e:
                 logger.error(f"Error during trial: {e}")
                 
-                # Check for pause request even after failed trial
+                # Check for pause request even after error
                 if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
                     self.should_pause = True
-                    self.keyboard_monitor.clear_pause()
-                    logger.info("\n⏸️  Pause requested ('p' pressed). Stopping after failed trial...")
+                    # Don't clear pause here - let keyboard monitor handle the toggle
+                    logger.info("\n⏸️  Executing pause after error...")
                     if self.wandb_project:
                         logger.info("   Study will be saved to WandB for easy resume")
                     # Break out of loop to trigger save logic
@@ -513,8 +513,9 @@ class PausibleOptunaOptimizer:
                 # Continue with next trial if not pausing
                 continue
         
-        # Stop keyboard monitoring
+        # Stop keyboard monitoring and clear pause state
         if self.keyboard_monitor:
+            self.keyboard_monitor.clear_pause()  # Clear any pending pause
             self.keyboard_monitor.stop()
         
         # Handle pause save or final save

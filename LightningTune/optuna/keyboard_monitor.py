@@ -128,9 +128,16 @@ class KeyboardMonitor:
             try:
                 key = self._read_key(timeout=0.1)
                 if key and key.lower() == self.pause_key:
-                    self._pause_requested = True
-                    logger.info(f"\n⏸️  Pause key ('{self.pause_key}') detected!")
-                    logger.info("   Will pause after current trial completes (not interrupting mid-trial)...")
+                    # Toggle pause state
+                    if self._pause_requested:
+                        self._pause_requested = False
+                        logger.info(f"\n✅ Pause CANCELLED ('{self.pause_key}' pressed again)")
+                        logger.info("   Optimization will continue normally")
+                    else:
+                        self._pause_requested = True
+                        logger.info(f"\n⏸️  Pause SCHEDULED ('{self.pause_key}' pressed)")
+                        logger.info("   Will pause after current trial completes")
+                        logger.info(f"   Press '{self.pause_key}' again to cancel pause")
             except Exception:
                 # Ignore read errors, just continue
                 pass
