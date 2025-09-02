@@ -15,9 +15,9 @@ import logging
 import optuna
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.pruners import BasePruner, MedianPruner
-import pytorch_lightning as pl
-from pytorch_lightning import LightningModule, Trainer
-from pytorch_lightning.callbacks import Callback
+import lightning.pytorch as pl
+from lightning.pytorch import LightningModule, Trainer
+from lightning.pytorch.callbacks import Callback
 
 from .search_space import OptunaSearchSpace
 from .callbacks import OptunaPruningCallback
