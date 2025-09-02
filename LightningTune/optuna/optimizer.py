@@ -258,7 +258,7 @@ class OptunaDrivenOptimizer:
             
             # Add checkpoint callback if requested
             if self.save_checkpoints:
-                from pytorch_lightning.callbacks import ModelCheckpoint
+                from lightning.pytorch.callbacks import ModelCheckpoint
                 checkpoint_callback = ModelCheckpoint(
                     dirpath=self.experiment_dir / f"trial_{trial.number}",
                     filename="{epoch}-{val_loss:.2f}",
