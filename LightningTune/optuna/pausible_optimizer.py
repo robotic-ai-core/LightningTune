@@ -423,8 +423,9 @@ class PausibleOptunaOptimizer:
                 logger.info(f"📊 Starting Trial {trial_number} of {n_trials} ({progress_percent:.1f}% complete)")
                 logger.info(f"{'='*60}")
                 
-                # Run single trial (no progress bar for single trial)
-                study.optimize(objective, n_trials=1, show_progress_bar=False)
+                # Run single trial with automatic garbage collection
+                # gc_after_trial=True ensures memory is cleaned between trials
+                study.optimize(objective, n_trials=1, show_progress_bar=False, gc_after_trial=True)
                 
                 # Check if a new trial was actually finished (COMPLETE or PRUNED)
                 trials_after = len([t for t in study.trials 

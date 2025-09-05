@@ -396,6 +396,14 @@ class ReflowOptunaDrivenOptimizer:
                         import wandb
                         wandb.finish(quiet=True)
                     
+                    # Clean up references to help garbage collection
+                    # DataLoader cleanup is handled by DataModule.teardown()
+                    # gc.collect() is handled by Optuna's gc_after_trial=True
+                    
+                    # Note: We rely on function scope cleanup when objective returns
+                    # The key cleanup (DataLoaders) is handled by DataModule.teardown()
+                    # Additional gc.collect() is done by Optuna's gc_after_trial=True
+                    
                     return metric_value
                     
                 except optuna.TrialPruned:
@@ -480,6 +488,14 @@ class ReflowOptunaDrivenOptimizer:
                 wandb_logger.finalize("success")
                 import wandb
                 wandb.finish(quiet=True)
+            
+            # Clean up references to help garbage collection
+            # DataLoader cleanup is handled by DataModule.teardown()
+            # gc.collect() is handled by Optuna's gc_after_trial=True
+            
+            # Note: We rely on function scope cleanup when objective returns
+            # The key cleanup (DataLoaders) is handled by DataModule.teardown()
+            # Additional gc.collect() is done by Optuna's gc_after_trial=True
             
             return metric_value
             
