@@ -496,7 +496,8 @@ class PausibleOptunaOptimizer:
                 if self.keyboard_monitor:
                     self.keyboard_monitor.stop()
                 logger.info("\n❌ Optimization terminated by user (Ctrl+C)")
-                raise  # Re-raise to terminate
+                # Ensure the KeyboardInterrupt propagates all the way out
+                raise
                 
             except Exception as e:
                 logger.error(f"Error during trial: {e}")

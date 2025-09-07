@@ -221,48 +221,8 @@ class OptunaDrivenOptimizer:
             
             # Setup callbacks
             callbacks = list(self.callbacks)
-            
-            # Add pruning callback and NaN detection
-            if not isinstance(self.pruner, NopPruner):
-                # Enhanced pruning callback (validation-end) without step-based reporting
-                try:
-                    from .nan_detection_callback import EnhancedOptunaPruningCallback
-                    pruning_callback = EnhancedOptunaPruningCallback(
-                        trial, 
-                        monitor=self.metric,
-                        check_nan=True,
-                        verbose=True,
-                    )
-                except ImportError:
-                    pruning_callback = OptunaPruningCallback(trial, monitor=self.metric)
-                callbacks.append(pruning_callback)
-                # Always add train-step NaN detection alongside pruner
-                try:
-                    from .nan_detection_callback import NaNDetectionCallback
-                    nan_callback = NaNDetectionCallback(
-                        trial,
-                        monitor=self.metric,
-                        check_train_loss=True,
-                        check_every_n_steps=10,
-                        verbose=True
-                    )
-                    callbacks.append(nan_callback)
-                except ImportError:
-                    pass
-            else:
-                # NopPruner: still add NaN detection
-                try:
-                    from .nan_detection_callback import NaNDetectionCallback
-                    nan_callback = NaNDetectionCallback(
-                        trial,
-                        monitor=self.metric,
-                        check_train_loss=True,
-                        check_every_n_steps=10,
-                        verbose=True
-                    )
-                    callbacks.append(nan_callback)
-                except ImportError:
-                    pass  # NaN detection not available
+            from .callback_factory import build_optuna_callbacks
+            callbacks.extend(build_optuna_callbacks(trial, self.metric))
             
             # Create trainer config
             trainer_config = config.get('trainer', {})
@@ -287,46 +247,18 @@ class OptunaDrivenOptimizer:
             # Remove any existing logger config first
             trainer_config.pop('logger', None)
             
-            # Setup WandB logger if requested
+            # Setup WandB logger if requested (centralized utility)
             wandb_logger = None
             if self.wandb_project:
-                from lightning.pytorch.loggers import WandbLogger
-                
-                # For WandB, log only the hyperparameters being optimized with simplified names
-                # This makes the UI much cleaner and easier to read
-                wandb_config = {}
-                
-                # Add suggested params with simplified names
-                if suggested_params:
-                    # Simplify parameter names for WandB display
-                    # Remove 'init_args' and top-level prefixes like 'model.', 'data.'
-                    for key, value in suggested_params.items():
-                        parts = key.split('.')
-                        clean_parts = [p for p in parts if p != 'init_args']
-                        if clean_parts and clean_parts[0] in ['model', 'data', 'trainer']:
-                            clean_parts = clean_parts[1:]
-                        # Further simplifications
-                        clean_parts = [
-                            p.replace('transformer_hparams', 'transformer')
-                             .replace('adapter_hparams', 'adapter')
-                             .replace('_hparams', '')
-                            for p in clean_parts
-                        ]
-                        clean_key = '.'.join(clean_parts) if clean_parts else key
-                        wandb_config[clean_key] = value
-                
-                # Also add trial metadata
-                wandb_config['trial_number'] = trial.number
-                wandb_config['sampler'] = self.sampler.__class__.__name__
-                wandb_config['pruner'] = self.pruner.__class__.__name__
-                
-                # Create WandB logger for this trial
-                wandb_logger = WandbLogger(
+                from ..utils.wandb_logger import create_wandb_logger
+                wandb_logger = create_wandb_logger(
                     project=self.wandb_project,
-                    name=f"{self.study_name}_trial_{trial.number}",
-                    # Let WandB auto-generate unique ID and handle name conflicts
-                    config=wandb_config,  # Use simplified config
-                    log_model=self.upload_checkpoints,  # Control checkpoint uploads
+                    study_name=self.study_name,
+                    trial_number=trial.number,
+                    suggested_params=suggested_params,
+                    sampler_name=self.sampler.__class__.__name__,
+                    pruner_name=self.pruner.__class__.__name__,
+                    upload_checkpoints=self.upload_checkpoints,
                 )
             
             # Handle progress bar configuration
