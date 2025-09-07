@@ -299,53 +299,19 @@ class ReflowOptunaDrivenOptimizer:
             except Exception:
                 pass
             
-            # Setup WandB logger if requested
+            # Setup WandB logger if requested (centralized utility)
             wandb_logger = None
             if self.wandb_project:
-                # Ensure any previous WandB run is finished
-                import wandb
-                if wandb.run is not None:
-                    logger.info(f"Finishing previous WandB run before starting trial {trial.number}")
-                    wandb.finish(quiet=True)
-                
-                from lightning.pytorch.loggers import WandbLogger
-                
-                # For WandB, log only the hyperparameters being optimized with simplified names
-                # This makes the UI much cleaner and easier to read
-                wandb_config = {}
-                
-                # Add suggested params with simplified names
-                if suggested_params:
-                    # Simplify parameter names for WandB display
-                    # Remove 'init_args' and top-level prefixes like 'model.', 'data.'
-                    for key, value in suggested_params.items():
-                        parts = key.split('.')
-                        clean_parts = [p for p in parts if p != 'init_args']
-                        if clean_parts and clean_parts[0] in ['model', 'data', 'trainer']:
-                            clean_parts = clean_parts[1:]
-                        # Further simplifications
-                        clean_parts = [
-                            p.replace('transformer_hparams', 'transformer')
-                             .replace('adapter_hparams', 'adapter')
-                             .replace('_hparams', '')
-                            for p in clean_parts
-                        ]
-                        clean_key = '.'.join(clean_parts) if clean_parts else key
-                        wandb_config[clean_key] = value
-                
-                # Also add trial metadata
-                wandb_config['trial_number'] = trial.number
-                wandb_config['sampler'] = self.sampler.__class__.__name__
-                wandb_config['pruner'] = self.pruner.__class__.__name__
-                
-                wandb_logger = WandbLogger(
+                from ..utils.wandb_logger import create_wandb_logger
+                wandb_logger = create_wandb_logger(
                     project=self.wandb_project,
-                    name=f"{self.study_name}_trial_{trial.number}",
-                    config=wandb_config,  # Use simplified config
-                    log_model=self.upload_checkpoints,
-                    reinit="finish_previous",  # Finish any previous run before starting new one
+                    study_name=self.study_name,
+                    trial_number=trial.number,
+                    suggested_params=suggested_params,
+                    sampler_name=self.sampler.__class__.__name__,
+                    pruner_name=self.pruner.__class__.__name__,
+                    upload_checkpoints=self.upload_checkpoints,
                 )
-                # Add to trainer_config for both Reflow and vanilla
                 trainer_config['logger'] = wandb_logger
             
             if self.use_reflow:
@@ -395,25 +361,22 @@ class ReflowOptunaDrivenOptimizer:
                         logger.warning(f"Metric {self.metric} not found in callback_metrics")
                     
                     # IMPORTANT: Let callbacks finish logging before closing WandB
-                    # The visualizer callback needs an active WandB run to upload videos
-                    # Force flush any pending WandB logs
                     if wandb_logger:
-                        import wandb
-                        if wandb.run is not None:
-                            # Ensure all logs are uploaded before closing
-                            wandb.run.log_code()
-                            # Update summary with final metrics
-                            final_metrics = {"final_metric": metric_value}
-                            wandb.run.summary.update(final_metrics)
+                        try:
+                            import wandb
+                            if wandb.run is not None:
+                                wandb.run.log_code()
+                                wandb.run.summary.update({"final_metric": metric_value})
+                        except Exception:
+                            pass
                     
                     # Clean up torch compile state between trials
                     self._reset_torch_compile_state()
                     
                     # Now finalize WandB logger after callbacks have completed
                     if wandb_logger:
-                        wandb_logger.finalize("success")
-                        import wandb
-                        wandb.finish(quiet=True)
+                        from ..utils.wandb_logger import finalize_wandb_logger
+                        finalize_wandb_logger(wandb_logger, "success")
                     
                     # Clean up references to help garbage collection
                     # DataLoader cleanup is handled by DataModule.teardown()
@@ -430,9 +393,8 @@ class ReflowOptunaDrivenOptimizer:
                     self._reset_torch_compile_state()
                     # Clean up WandB before raising
                     if wandb_logger:
-                        wandb_logger.finalize("pruned")
-                        import wandb
-                        wandb.finish(quiet=True)
+                        from ..utils.wandb_logger import finalize_wandb_logger
+                        finalize_wandb_logger(wandb_logger, "pruned")
                     raise
                 except Exception as e:
                     logger.error(f"Trial {trial.number} failed with Reflow: {e}")
@@ -440,9 +402,8 @@ class ReflowOptunaDrivenOptimizer:
                     self._reset_torch_compile_state()
                     # Clean up WandB before fallback
                     if wandb_logger:
-                        wandb_logger.finalize("failed")
-                        import wandb
-                        wandb.finish(quiet=True)
+                        from ..utils.wandb_logger import finalize_wandb_logger
+                        finalize_wandb_logger(wandb_logger, "failed")
                     # Optionally fall back to vanilla Lightning
                     if self.verbose:
                         logger.info("Falling back to vanilla Lightning")
@@ -504,9 +465,8 @@ class ReflowOptunaDrivenOptimizer:
             
             # Finalize WandB logger to ensure proper cleanup
             if wandb_logger:
-                wandb_logger.finalize("success")
-                import wandb
-                wandb.finish(quiet=True)
+                from ..utils.wandb_logger import finalize_wandb_logger
+                finalize_wandb_logger(wandb_logger, "success")
             
             # Clean up references to help garbage collection
             # DataLoader cleanup is handled by DataModule.teardown()
@@ -521,17 +481,15 @@ class ReflowOptunaDrivenOptimizer:
         except optuna.TrialPruned:
             # Clean up WandB before raising
             if wandb_logger:
-                wandb_logger.finalize("pruned")
-                import wandb
-                wandb.finish(quiet=True)
+                from ..utils.wandb_logger import finalize_wandb_logger
+                finalize_wandb_logger(wandb_logger, "pruned")
             raise
         except Exception as e:
             logger.error(f"Trial {trial.number} failed: {e}")
             # Clean up WandB on failure
             if wandb_logger:
-                wandb_logger.finalize("failed")
-                import wandb
-                wandb.finish(quiet=True)
+                from ..utils.wandb_logger import finalize_wandb_logger
+                finalize_wandb_logger(wandb_logger, "failed")
             return float('inf') if self.direction == "minimize" else float('-inf')
     
     def optimize(self) -> optuna.Study:
