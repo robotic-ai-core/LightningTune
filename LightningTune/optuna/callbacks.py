@@ -360,3 +360,25 @@ class OptunaEarlyStoppingCallback(Callback):
         if self.stopped_epoch > 0:
             logger.info(f"Training stopped early at epoch {self.stopped_epoch}")
             logger.info(f"Best {self.monitor}: {self.best_metric}")
+
+
+class PruneOnExceptionCallback(Callback):
+    """
+    Prune the current Optuna trial if a non-interrupt exception occurs during training.
+    
+    - Preserves Ctrl+C behavior by skipping KeyboardInterrupt
+    - Converts unexpected runtime errors into TrialPruned to free resources quickly
+    """
+    def __init__(self, trial: optuna.Trial):
+        self.trial = trial
+    
+    def on_exception(self, trainer: L.Trainer, pl_module: L.LightningModule, err: BaseException) -> None:
+        # Do not interfere with user interrupts
+        if isinstance(err, KeyboardInterrupt):
+            return
+        # Mark and prune
+        try:
+            self.trial.set_user_attr('failed_reason', f'exception:{type(err).__name__}')
+        except Exception:
+            pass
+        raise optuna.TrialPruned(f"Pruned due to exception: {type(err).__name__}")

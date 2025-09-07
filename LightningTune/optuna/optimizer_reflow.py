@@ -232,31 +232,42 @@ class ReflowOptunaDrivenOptimizer:
             # Setup callbacks
             callbacks = list(self.callbacks)
             
-            # Add pruning callback with NaN detection if pruner is not NopPruner
+            # Add pruning callback and NaN detection
             if not isinstance(self.pruner, NopPruner):
-                # Import NaN detection callback
+                # Import enhanced pruning callback (validation-end) without step-based reporting
                 try:
                     from .nan_detection_callback import EnhancedOptunaPruningCallback
-                    # Use enhanced callback with NaN detection
                     pruning_callback = EnhancedOptunaPruningCallback(
-                        trial, 
+                        trial,
                         monitor=self.metric,
                         check_nan=True,
-                        verbose=True
+                        verbose=True,
                     )
                 except ImportError:
-                    # Fallback to regular callback
                     pruning_callback = OptunaPruningCallback(trial, monitor=self.metric)
                 callbacks.append(pruning_callback)
-            else:
-                # Even with NopPruner, add NaN detection
+                # Always add train-step NaN detection alongside pruner
                 try:
                     from .nan_detection_callback import NaNDetectionCallback
                     nan_callback = NaNDetectionCallback(
                         trial,
                         monitor=self.metric,
                         check_train_loss=True,
-                        check_every_n_steps=100,  # Check every 100 steps (checks all loss keys)
+                        check_every_n_steps=10,
+                        verbose=True
+                    )
+                    callbacks.append(nan_callback)
+                except ImportError:
+                    pass
+            else:
+                # NopPruner: still add NaN detection to kill NaN trials quickly
+                try:
+                    from .nan_detection_callback import NaNDetectionCallback
+                    nan_callback = NaNDetectionCallback(
+                        trial,
+                        monitor=self.metric,
+                        check_train_loss=True,
+                        check_every_n_steps=10,
                         verbose=True
                     )
                     callbacks.append(nan_callback)
@@ -279,6 +290,14 @@ class ReflowOptunaDrivenOptimizer:
             trainer_config = config.get('trainer', {})
             trainer_config.pop('callbacks', None)  # Remove any existing callbacks config
             trainer_config.pop('logger', None)  # Will be set by Reflow or below
+            
+            # Setup WandB logger if requested
+            # Add prune-on-exception to free resources on early failures
+            try:
+                from .callbacks import PruneOnExceptionCallback
+                callbacks.append(PruneOnExceptionCallback(trial))
+            except Exception:
+                pass
             
             # Setup WandB logger if requested
             wandb_logger = None

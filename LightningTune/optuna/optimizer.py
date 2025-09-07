@@ -222,31 +222,42 @@ class OptunaDrivenOptimizer:
             # Setup callbacks
             callbacks = list(self.callbacks)
             
-            # Add pruning callback with NaN detection if pruner is not NopPruner
+            # Add pruning callback and NaN detection
             if not isinstance(self.pruner, NopPruner):
-                # Import NaN detection callback
+                # Enhanced pruning callback (validation-end) without step-based reporting
                 try:
                     from .nan_detection_callback import EnhancedOptunaPruningCallback
-                    # Use enhanced callback with NaN detection
                     pruning_callback = EnhancedOptunaPruningCallback(
                         trial, 
                         monitor=self.metric,
                         check_nan=True,
-                        verbose=True
+                        verbose=True,
                     )
                 except ImportError:
-                    # Fallback to regular callback
                     pruning_callback = OptunaPruningCallback(trial, monitor=self.metric)
                 callbacks.append(pruning_callback)
-            else:
-                # Even with NopPruner, add NaN detection
+                # Always add train-step NaN detection alongside pruner
                 try:
                     from .nan_detection_callback import NaNDetectionCallback
                     nan_callback = NaNDetectionCallback(
                         trial,
                         monitor=self.metric,
                         check_train_loss=True,
-                        check_every_n_steps=100,  # Check every 100 steps (checks all loss keys)
+                        check_every_n_steps=10,
+                        verbose=True
+                    )
+                    callbacks.append(nan_callback)
+                except ImportError:
+                    pass
+            else:
+                # NopPruner: still add NaN detection
+                try:
+                    from .nan_detection_callback import NaNDetectionCallback
+                    nan_callback = NaNDetectionCallback(
+                        trial,
+                        monitor=self.metric,
+                        check_train_loss=True,
+                        check_every_n_steps=10,
                         verbose=True
                     )
                     callbacks.append(nan_callback)
@@ -325,6 +336,13 @@ class OptunaDrivenOptimizer:
                 progress_callback = RichProgressBar(refresh_rate=10)
                 callbacks.append(progress_callback)
                 # Keep enable_progress_bar as True since we want the progress bar
+            
+            # Add prune-on-exception to free resources on early failures
+            try:
+                from .callbacks import PruneOnExceptionCallback
+                callbacks.append(PruneOnExceptionCallback(trial))
+            except Exception:
+                pass
             
             trainer = Trainer(
                 callbacks=callbacks,
