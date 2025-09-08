@@ -373,7 +373,7 @@ class PruneOnExceptionCallback(Callback):
         self.trial = trial
     
     def on_exception(self, trainer: L.Trainer, pl_module: L.LightningModule, err: BaseException) -> None:
-        # Preserve Ctrl+C: re-raise to terminate immediately
+        # Preserve Ctrl+C by re-raising immediately so it propagates out of Lightning
         if isinstance(err, KeyboardInterrupt):
             raise err
         # Mark and prune

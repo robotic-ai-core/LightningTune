@@ -340,7 +340,26 @@ class PausibleOptunaOptimizer:
                 self.total_trials_completed = finished_count
         else:
             # Create new study
-            sampler = create_sampler(self.sampler_name)
+            # Seed sampler for reproducible HPO sequences when config has a seed
+            # Try to extract seed from base_config if it's a file or dict with 'seed_everything'
+            seed_value = None
+            try:
+                if isinstance(self.base_config, dict):
+                    seed_value = self.base_config.get('seed_everything', None)
+                else:
+                    # If it's a path-like string, attempt to read YAML and pull seed
+                    import yaml
+                    from pathlib import Path
+                    cfg_path = Path(self.base_config)
+                    if cfg_path.exists():
+                        with cfg_path.open('r') as f:
+                            cfg = yaml.safe_load(f)
+                            if isinstance(cfg, dict):
+                                seed_value = cfg.get('seed_everything', None)
+            except Exception:
+                seed_value = None
+
+            sampler = create_sampler(self.sampler_name, seed=seed_value)
             pruner = create_pruner(self.pruner_name)
             
             study = optuna.create_study(

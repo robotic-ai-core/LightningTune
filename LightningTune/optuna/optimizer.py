@@ -184,6 +184,14 @@ class OptunaDrivenOptimizer:
         def objective(trial: optuna.Trial) -> float:
             # Start with base config
             config = self.base_config.copy()
+            # Ensure deterministic seeding for vanilla path if seed present
+            try:
+                import lightning.pytorch as pl
+                seed_value = config.get('seed_everything', None)
+                if seed_value is not None:
+                    pl.seed_everything(int(seed_value))
+            except Exception:
+                pass
             
             # Apply fixed config overrides first
             if self.config_overrides:
