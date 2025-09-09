@@ -17,6 +17,30 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+def _report_then_prune(
+    trial: optuna.Trial,
+    value: float,
+    index: int,
+    monitor: str,
+    index_name: str,
+) -> None:
+    """Report the metric value to Optuna, mark reason, and prune.
+
+    This ensures Optuna records the intermediate value (even if NaN/Inf)
+    before the trial is pruned, improving diagnostics and dashboards.
+    """
+    try:
+        trial.report(value, index)
+    except Exception:
+        # Reporting failure should not block pruning
+        pass
+    try:
+        trial.set_user_attr('failed_reason', 'nan_or_inf_loss')
+    except Exception:
+        pass
+    raise optuna.TrialPruned(f"{monitor} is NaN/Inf at {index_name} {index}")
+
+
 class NaNDetectionCallback(Callback):
     """
     Callback that terminates trials when NaN or Inf values are detected.
@@ -121,9 +145,14 @@ class NaNDetectionCallback(Callback):
                         continue  # Skip non-numeric values
                 
                 if self._check_value(loss_value, f"{loss_name}"):
-                    # Mark trial as failed and raise TrialPruned
-                    self.trial.set_user_attr('failed_reason', 'nan_or_inf_loss')
-                    raise optuna.TrialPruned(f"{loss_name} is NaN/Inf at step {trainer.global_step}")
+                    # Report then prune so Optuna records the intermediate value
+                    _report_then_prune(
+                        self.trial,
+                        loss_value,
+                        trainer.global_step,
+                        loss_name,
+                        "step",
+                    )
         
         # Debug logging if no losses found (only log once)
         if not losses_to_check and self.verbose and self.step_count == 100:
@@ -136,9 +165,13 @@ class NaNDetectionCallback(Callback):
             value = trainer.callback_metrics[self.monitor].item()
             
             if self._check_value(value, f"{self.monitor}"):
-                # Mark trial as failed and raise TrialPruned
-                self.trial.set_user_attr('failed_reason', 'nan_or_inf_loss')
-                raise optuna.TrialPruned(f"{self.monitor} is NaN/Inf at epoch {trainer.current_epoch}")
+                _report_then_prune(
+                    self.trial,
+                    value,
+                    trainer.current_epoch,
+                    self.monitor,
+                    "epoch",
+                )
         
         # Also check all validation metrics for completeness
         for key, value in trainer.callback_metrics.items():
@@ -209,8 +242,13 @@ class EnhancedOptunaPruningCallback(OptunaPruningCallback):
                         f"🚨 Trial {self.trial.number}: {self.monitor} is {state} at epoch {epoch}! "
                         f"Terminating trial."
                     )
-                self.trial.set_user_attr('failed_reason', 'nan_or_inf_loss')
-                raise optuna.TrialPruned(f"{self.monitor} is NaN/Inf")
+                _report_then_prune(
+                    self.trial,
+                    value,
+                    epoch,
+                    self.monitor,
+                    "epoch",
+                )
             
             # Regular pruning logic
             self.trial.report(value, epoch)

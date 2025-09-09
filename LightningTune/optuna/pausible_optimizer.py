@@ -16,6 +16,10 @@ import pickle
 import tempfile
 import logging
 from typing import Optional, Dict, Any, Callable, Union, Type, List
+import sys
+from pathlib import Path
+import threading
+import time
 
 import optuna
 import wandb
@@ -25,7 +29,17 @@ from lightning.pytorch.callbacks import Callback
 from .optimizer import OptunaDrivenOptimizer
 from .optimizer_reflow import ReflowOptunaDrivenOptimizer
 from .factories import create_sampler, create_pruner
-from .keyboard_monitor import KeyboardMonitor
+try:
+    # Ensure Reflow package is importable when used as a submodule
+    reflow_path = Path(__file__).parent.parent.parent.parent / "LightningReflow"
+    if reflow_path.exists():
+        sys.path.insert(0, str(reflow_path))
+    # Prefer Reflow's robust keyboard handler to improve TTY restore and Ctrl+C behavior
+    from lightning_reflow.callbacks.pause.improved_keyboard_handler import (
+        create_improved_keyboard_handler,
+    )
+except Exception:  # Fallback if Reflow is not available
+    create_improved_keyboard_handler = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -98,15 +112,27 @@ class PausibleOptunaOptimizer:
         self.enable_pause = enable_pause
         self.use_reflow = use_reflow
         self.optimizer_kwargs = optimizer_kwargs
+        # Preserve original CLI argv to build accurate resume commands (Reflow-style)
+        try:
+            self._original_argv: List[str] = sys.argv.copy()
+        except Exception:
+            self._original_argv = []
         
         # Track progress
         self.total_trials_completed = 0
         self.should_pause = False
         
-        # Setup keyboard monitor for 'p' key pause
+        # Setup keyboard handler for 'p' key pause (robust terminal handling)
+        self.keyboard_handler = None
+        # Backward-compatibility shim for tests expecting `keyboard_monitor`
+        # (they patch this attribute; optimize() no longer uses it directly)
         self.keyboard_monitor = None
+        self._pause_requested: bool = False
         if enable_pause:
-            self.keyboard_monitor = KeyboardMonitor(pause_key='p')
+            if create_improved_keyboard_handler is not None:
+                self.keyboard_handler = create_improved_keyboard_handler()
+            else:
+                self.keyboard_handler = None
     
     
     def _verify_study_integrity(self, study: optuna.Study) -> tuple[bool, int, str]:
@@ -410,10 +436,17 @@ class PausibleOptunaOptimizer:
         objective = optimizer.create_objective()
         
         # Start keyboard monitoring if available
-        if self.keyboard_monitor:
-            keyboard_started = self.keyboard_monitor.start()
-            if not keyboard_started:
+        if self.keyboard_handler and hasattr(self.keyboard_handler, 'start_monitoring'):
+            try:
+                self.keyboard_handler.start_monitoring()
+            except Exception:
                 logger.info("ℹ️  Keyboard monitoring unavailable, pause functionality disabled")
+                self.keyboard_handler = None
+        # Start background polling for immediate schedule/cancel feedback
+        self._pause_poll_thread = None
+        self._polling_active = False
+        if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
+            self._start_pause_polling_thread()
         
         # Run trials with periodic saves
         trials_in_batch = 0
@@ -426,9 +459,8 @@ class PausibleOptunaOptimizer:
                                               optuna.trial.TrialState.PRUNED]])
             
             # Check for keyboard pause request before starting trial
-            if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
+            if self._update_pause_from_keyboard():
                 self.should_pause = True
-                # Don't clear pause here - let keyboard monitor handle the toggle
                 logger.info("\n⏸️  Executing pause at trial boundary...")
                 if self.wandb_project:
                     logger.info("   Study will be saved to WandB for easy resume")
@@ -485,13 +517,11 @@ class PausibleOptunaOptimizer:
                         trials_in_batch = 0
                     
                     # Check for pause request after trial completes
-                    if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
+                    if self._update_pause_from_keyboard():
                         self.should_pause = True
-                        # Don't clear pause here - let keyboard monitor handle the toggle
                         logger.info("\n⏸️  Executing pause after trial completion...")
                         if self.wandb_project:
                             logger.info("   Study will be saved to WandB for easy resume")
-                        # Break out of loop to trigger save logic
                         break
                 else:
                     # Trial failed (actual error, not pruning)
@@ -501,19 +531,20 @@ class PausibleOptunaOptimizer:
                     logger.info(f"{'─'*60}")
                     
                     # Check for pause request after failed trial
-                    if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
+                    if self._update_pause_from_keyboard():
                         self.should_pause = True
-                        # Don't clear pause here - let keyboard monitor handle the toggle
                         logger.info("\n⏸️  Executing pause after failed trial...")
                         if self.wandb_project:
                             logger.info("   Study will be saved to WandB for easy resume")
-                        # Break out of loop to trigger save logic
                         break
                     
             except KeyboardInterrupt:
-                # Clean up keyboard monitor before terminating
-                if self.keyboard_monitor:
-                    self.keyboard_monitor.stop()
+                # Clean up keyboard handler before terminating
+                if self.keyboard_handler and hasattr(self.keyboard_handler, 'stop_monitoring'):
+                    try:
+                        self.keyboard_handler.stop_monitoring()
+                    except Exception:
+                        pass
                 logger.info("\n❌ Optimization terminated by user (Ctrl+C)")
                 # Ensure the KeyboardInterrupt propagates all the way out
                 raise
@@ -535,9 +566,14 @@ class PausibleOptunaOptimizer:
                 continue
         
         # Stop keyboard monitoring and clear pause state
-        if self.keyboard_monitor:
-            self.keyboard_monitor.clear_pause()  # Clear any pending pause
-            self.keyboard_monitor.stop()
+        if self.keyboard_handler and hasattr(self.keyboard_handler, 'stop_monitoring'):
+            try:
+                self.keyboard_handler.stop_monitoring()
+            except Exception:
+                pass
+        self._pause_requested = False
+        # Stop background polling thread
+        self._stop_pause_polling_thread()
         
         # Handle pause save or final save
         study_was_saved = False
@@ -565,11 +601,15 @@ class PausibleOptunaOptimizer:
             if self.wandb_project:
                 if study_was_saved:
                     logger.info(f"\n📝 To resume, run:")
-                    import sys
-                    # Reconstruct the command line with resume flag
-                    script_name = sys.argv[0] if sys.argv else "world_model_hpo_optuna.py"
-                    resume_cmd = f"python {script_name} --wandb {self.wandb_project} --resume-from latest"
-                    if self.study_name != "optuna_study":
+                    # Prefer original CLI (includes all user overrides), then append resume flag
+                    if self._original_argv:
+                        base_cmd = " ".join(self._original_argv)
+                    else:
+                        # Fallback to a minimal script name if argv is unavailable
+                        base_cmd = "scripts/world_model_hpo_optuna.py --wandb {proj}".format(proj=self.wandb_project)
+                    resume_cmd = f"python {base_cmd} --resume-from latest"
+                    # Ensure study name is present if customized
+                    if self.study_name and self.study_name != "optuna_study" and "--study-name" not in resume_cmd:
                         resume_cmd += f" --study-name {self.study_name}"
                     logger.info(f"   {resume_cmd}")
                 else:
@@ -598,3 +638,78 @@ class PausibleOptunaOptimizer:
             logger.info("No trials completed successfully yet.")
         
         return study
+
+    # --- Internal helpers -------------------------------------------------
+
+    def _update_pause_from_keyboard(self) -> bool:
+        """Poll keyboard handler and toggle pause when 'p' is pressed.
+
+        Returns True if pause is currently requested.
+        """
+        # If background polling is active, just return current flag
+        if getattr(self, '_polling_active', False):
+            return self._pause_requested
+        try:
+            if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
+                key = self.keyboard_handler.get_key()
+                if key and str(key).lower() == 'p':
+                    self._pause_requested = not self._pause_requested
+                    if self._pause_requested:
+                        logger.info("\n⏸️  Pause SCHEDULED ('p' pressed)")
+                    else:
+                        logger.info("\n❌ Pause CANCELLED ('p' pressed again)")
+        except Exception:
+            pass
+        return self._pause_requested
+
+    def _build_resume_command(self) -> str:
+        """Construct a resume command string based on original argv and study settings."""
+        if self._original_argv:
+            base_cmd = " ".join(self._original_argv)
+        else:
+            # Reasonable fallback
+            script = "world_model_hpo_optuna.py"
+            base_cmd = f"{script} --wandb {self.wandb_project or 'my-project'}"
+        cmd = f"python {base_cmd} --resume-from latest"
+        if self.study_name and self.study_name != "optuna_study" and "--study-name" not in cmd:
+            cmd += f" --study-name {self.study_name}"
+        return cmd
+
+    def _start_pause_polling_thread(self) -> None:
+        """Start a lightweight background thread to poll keyboard input for 'p'."""
+        if self._pause_poll_thread and self._pause_poll_thread.is_alive():
+            return
+        self._polling_active = True
+        self._pause_poll_thread = threading.Thread(target=self._pause_input_loop, daemon=True, name="PauseInputWatcher")
+        self._pause_poll_thread.start()
+
+    def _stop_pause_polling_thread(self) -> None:
+        """Stop the background polling thread if running."""
+        if getattr(self, '_polling_active', False):
+            self._polling_active = False
+        t = getattr(self, '_pause_poll_thread', None)
+        if t and t.is_alive():
+            try:
+                t.join(timeout=1.0)
+            except Exception:
+                pass
+
+    def _pause_input_loop(self) -> None:
+        """Continuously poll keyboard handler for immediate schedule/cancel feedback."""
+        last_state = self._pause_requested
+        while getattr(self, '_polling_active', False):
+            try:
+                if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
+                    key = self.keyboard_handler.get_key()
+                    if key and str(key).lower() == 'p':
+                        # Toggle pause state
+                        self._pause_requested = not self._pause_requested
+                        if self._pause_requested and not last_state:
+                            logger.info("\n⏸️  Pause SCHEDULED ('p' pressed)")
+                        elif (not self._pause_requested) and last_state:
+                            logger.info("\n❌ Pause CANCELLED ('p' pressed again)")
+                        last_state = self._pause_requested
+            except Exception:
+                # Ignore read errors
+                pass
+            time.sleep(0.05)
