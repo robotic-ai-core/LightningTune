@@ -371,6 +371,7 @@ class PausibleOptunaOptimizer:
         # Resolve resume automatically (prefer local if available)
         session_info = None
         if resume_from:
+            session_info = None
             try:
                 if os.path.exists(resume_from):
                     session_info = self.load_study_from_local(resume_from)

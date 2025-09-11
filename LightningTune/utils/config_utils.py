@@ -4,6 +4,7 @@ Configuration utilities for merging and manipulating configs.
 
 from typing import Dict, Any
 import copy
+import yaml
 
 
 def deep_merge_configs(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -106,3 +107,22 @@ def merge_with_dotted_updates(
         result = apply_dotted_updates(result, dotted_updates)
     
     return result
+
+
+def load_yaml_config(path: str) -> Dict[str, Any]:
+    """
+    Load a YAML configuration file.
+    
+    Args:
+        path: Path to the YAML file
+    
+    Returns:
+        Dictionary containing the loaded configuration
+    
+    Example:
+        >>> config = load_yaml_config("config.yaml")
+        >>> isinstance(config, dict)
+        True
+    """
+    with open(path, 'r') as f:
+        return yaml.safe_load(f)
