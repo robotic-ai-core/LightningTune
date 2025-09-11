@@ -647,16 +647,7 @@ class PausibleOptunaOptimizer:
             if self.wandb_project:
                 if study_was_saved:
                     logger.info(f"\n📝 To resume, run:")
-                    # Prefer original CLI (includes all user overrides), then append resume flag
-                    if self._original_argv:
-                        base_cmd = " ".join(self._original_argv)
-                    else:
-                        # Fallback to a minimal script name if argv is unavailable
-                        base_cmd = "scripts/world_model_hpo_optuna.py --wandb {proj}".format(proj=self.wandb_project)
-                    resume_cmd = f"python {base_cmd} --resume-from latest"
-                    # Ensure study name is present if customized
-                    if self.study_name and self.study_name != "optuna_study" and "--study-name" not in resume_cmd:
-                        resume_cmd += f" --study-name {self.study_name}"
+                    resume_cmd = self._build_resume_command()
                     logger.info(f"   {resume_cmd}")
                 else:
                     logger.info(f"⚠️  Failed to save study checkpoint - cannot resume from this point")
@@ -667,18 +658,8 @@ class PausibleOptunaOptimizer:
             # Print local resume command if configured
             if self.local_checkpoint_dir:
                 try:
-                    if self._original_argv:
-                        base_cmd_local = " ".join(self._original_argv)
-                    else:
-                        base_cmd_local = "scripts/world_model_hpo_optuna.py"
                     local_path = str(self.local_checkpoint_dir)
-                    local_resume_cmd = f"python {base_cmd_local}"
-                    if "--resume-from" not in base_cmd_local:
-                        local_resume_cmd += f" --resume-from {local_path}"
-                    if "--local-checkpoint-dir" not in base_cmd_local:
-                        local_resume_cmd += f" --local-checkpoint-dir {local_path}"
-                    if self.study_name and self.study_name != "optuna_study" and "--study-name" not in local_resume_cmd:
-                        local_resume_cmd += f" --study-name {self.study_name}"
+                    local_resume_cmd = self._build_local_resume_command(local_path)
                     logger.info(f"   Local resume: {local_resume_cmd}")
                 except Exception:
                     pass
@@ -726,18 +707,52 @@ class PausibleOptunaOptimizer:
             pass
         return self._pause_requested
 
+    def _sanitize_argv(self, argv: List[str], flags_to_strip: List[str]) -> List[str]:
+        """Remove specified flags (and their values if separate) from argv.
+
+        Prevents duplicated/conflicting flags when constructing resume commands.
+        """
+        sanitized: List[str] = []
+        skip_next = False
+        for i, token in enumerate(argv):
+            if skip_next:
+                skip_next = False
+                continue
+            matched_flag = None
+            for flag in flags_to_strip:
+                if token == flag or token.startswith(flag + "="):
+                    matched_flag = flag
+                    break
+            if matched_flag is not None:
+                # If provided as "--flag value", skip the next token if it looks like a value
+                if "=" not in token and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                    skip_next = True
+                continue
+            sanitized.append(token)
+        return sanitized
+
     def _build_resume_command(self) -> str:
-        """Construct a resume command string based on original argv and study settings."""
-        if self._original_argv:
-            base_cmd = " ".join(self._original_argv)
-        else:
-            # Reasonable fallback
-            script = "world_model_hpo_optuna.py"
-            base_cmd = f"{script} --wandb {self.wandb_project or 'my-project'}"
-        cmd = f"python {base_cmd} --resume-from latest"
-        if self.study_name and self.study_name != "optuna_study" and "--study-name" not in cmd:
-            cmd += f" --study-name {self.study_name}"
-        return cmd
+        """Construct a minimal resume command that preserves only what's necessary.
+
+        Minimal W&B resume requires:
+        - script path
+        - --wandb <project> (so artifact namespace is correct)
+        - --study-name <name> (to select the exact study artifact)
+        - --resume-from latest
+        """
+        script = self._original_argv[0] if (self._original_argv and self._original_argv[0]) else "scripts/world_model_hpo_optuna.py"
+        parts: List[str] = ["python", script]
+        if self.wandb_project:
+            parts += ["--wandb", str(self.wandb_project)]
+        if self.study_name:
+            parts += ["--study-name", str(self.study_name)]
+        parts += ["--resume-from", "latest"]
+        return " ".join(parts)
+
+    def _build_local_resume_command(self, local_path: str) -> str:
+        """Construct a minimal local resume command using filesystem path only."""
+        script = self._original_argv[0] if (self._original_argv and self._original_argv[0]) else "scripts/world_model_hpo_optuna.py"
+        return f"python {script} --resume-from {local_path}"
 
     # --- Local checkpoint helpers ----------------------------------------
     def save_study_to_local(self, study: optuna.Study, total_trials_completed: int) -> bool:
