@@ -20,6 +20,9 @@ import sys
 from pathlib import Path
 import threading
 import time
+import subprocess
+import copy
+import yaml
 
 import optuna
 import wandb
@@ -81,6 +84,7 @@ class PausibleOptunaOptimizer:
         save_every_n_trials: int = 10,
         enable_pause: bool = True,
         use_reflow: bool = False,  # Option to use LightningReflow
+        isolate_trials: bool = False,
         **optimizer_kwargs
     ):
         """
@@ -111,7 +115,34 @@ class PausibleOptunaOptimizer:
         self.save_every_n_trials = save_every_n_trials
         self.enable_pause = enable_pause
         self.use_reflow = use_reflow
+        self.isolate_trials = isolate_trials
         self.optimizer_kwargs = optimizer_kwargs
+        # Optional local checkpoint directory (for mirroring study.pkl)
+        self.local_checkpoint_dir: Optional[Path] = None
+        try:
+            lcd = self.optimizer_kwargs.pop("local_checkpoint_dir", None)
+            if lcd:
+                self.local_checkpoint_dir = Path(lcd)
+                self.local_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            self.local_checkpoint_dir = None
+        if self.local_checkpoint_dir is None:
+            try:
+                exp_dir = self.optimizer_kwargs.get("experiment_dir", None)  # optional
+            except Exception:
+                exp_dir = None
+            try:
+                if exp_dir:
+                    self.local_checkpoint_dir = Path(exp_dir) / ".optuna_study"
+                else:
+                    base = Path("checkpoints")
+                    if self.wandb_project:
+                        self.local_checkpoint_dir = base / self.wandb_project / self.study_name
+                    else:
+                        self.local_checkpoint_dir = base / self.study_name
+                self.local_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                self.local_checkpoint_dir = None
         # Preserve original CLI argv to build accurate resume commands (Reflow-style)
         try:
             self._original_argv: List[str] = sys.argv.copy()
@@ -128,7 +159,7 @@ class PausibleOptunaOptimizer:
         # (they patch this attribute; optimize() no longer uses it directly)
         self.keyboard_monitor = None
         self._pause_requested: bool = False
-        if enable_pause:
+        if enable_pause and os.environ.get("LT_CHILD", "0") != "1":
             if create_improved_keyboard_handler is not None:
                 self.keyboard_handler = create_improved_keyboard_handler()
             else:
@@ -337,10 +368,18 @@ class PausibleOptunaOptimizer:
         Returns:
             Optuna study with results
         """
-        # Try to resume from WandB
+        # Resolve resume automatically (prefer local if available)
         session_info = None
-        if resume_from and self.wandb_project:
-            session_info = self.load_study_from_wandb(resume_from)
+        if resume_from:
+            try:
+                if os.path.exists(resume_from):
+                    session_info = self.load_study_from_local(resume_from)
+            except Exception:
+                session_info = None
+            if session_info is None and self.local_checkpoint_dir and self.local_checkpoint_dir.exists():
+                session_info = self.load_study_from_local(str(self.local_checkpoint_dir))
+            if session_info is None and self.wandb_project:
+                session_info = self.load_study_from_wandb(resume_from)
         
         if session_info:
             study = session_info["study"]
@@ -393,7 +432,8 @@ class PausibleOptunaOptimizer:
                 sampler=sampler,
                 pruner=pruner,
                 direction=self.optimizer_kwargs.get("direction", "minimize"),
-                storage=storage
+                storage=storage,
+                load_if_exists=True if storage else False
             )
             self.should_pause = False  # Ensure pause flag is reset for new study
             logger.info(f"\n{'='*60}")
@@ -510,7 +550,10 @@ class PausibleOptunaOptimizer:
                         logger.info(f"Current Best: No successful trials yet")
                     logger.info(f"{'─'*60}")
                     
-                    # Periodic save (only if we have new finished trials and WandB is configured)
+                    # Always mirror local checkpoint if configured
+                    if self.local_checkpoint_dir:
+                        self.save_study_to_local(study, self.total_trials_completed)
+                    # Periodic WandB save
                     if self.wandb_project and trials_in_batch >= self.save_every_n_trials:
                         if self.save_study_to_wandb(study, self.total_trials_completed):
                             last_saved_trial_count = self.total_trials_completed
@@ -577,15 +620,17 @@ class PausibleOptunaOptimizer:
         
         # Handle pause save or final save
         study_was_saved = False
-        if self.should_pause and self.wandb_project:
-            # ALWAYS save when pause is requested, regardless of whether there are new trials
-            # This is critical: pause means user wants to stop and resume later
-            logger.info(f"💾 Saving study state for pause (with {self.total_trials_completed} finished trials)")
-            study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
-            if study_was_saved:
-                last_saved_trial_count = self.total_trials_completed  # Update for consistency
-            else:
-                logger.error("⚠️  Failed to save study for pause - checkpoint may be incomplete")
+        if self.should_pause:
+            # Always save local
+            if self.local_checkpoint_dir:
+                self.save_study_to_local(study, self.total_trials_completed)
+            if self.wandb_project:
+                logger.info(f"💾 Saving study state for pause (with {self.total_trials_completed} finished trials)")
+                study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
+                if study_was_saved:
+                    last_saved_trial_count = self.total_trials_completed
+                else:
+                    logger.error("⚠️  Failed to save study for pause - checkpoint may be incomplete")
         elif self.wandb_project and self.total_trials_completed > last_saved_trial_count:
             # Regular final save - only if we have new finished trials since last save
             logger.info(f"💾 Saving final state with {self.total_trials_completed} finished trials")
@@ -618,6 +663,24 @@ class PausibleOptunaOptimizer:
             else:
                 logger.info(f"⚠️  No WandB project configured - checkpoint not saved")
                 logger.info(f"   To enable resume, use --wandb <project-name>")
+            # Print local resume command if configured
+            if self.local_checkpoint_dir:
+                try:
+                    if self._original_argv:
+                        base_cmd_local = " ".join(self._original_argv)
+                    else:
+                        base_cmd_local = "scripts/world_model_hpo_optuna.py"
+                    local_path = str(self.local_checkpoint_dir)
+                    local_resume_cmd = f"python {base_cmd_local}"
+                    if "--resume-from" not in base_cmd_local:
+                        local_resume_cmd += f" --resume-from {local_path}"
+                    if "--local-checkpoint-dir" not in base_cmd_local:
+                        local_resume_cmd += f" --local-checkpoint-dir {local_path}"
+                    if self.study_name and self.study_name != "optuna_study" and "--study-name" not in local_resume_cmd:
+                        local_resume_cmd += f" --study-name {self.study_name}"
+                    logger.info(f"   Local resume: {local_resume_cmd}")
+                except Exception:
+                    pass
             logger.info(f"{'='*60}")
         else:
             logger.info(f"\n{'='*60}")
@@ -674,6 +737,46 @@ class PausibleOptunaOptimizer:
         if self.study_name and self.study_name != "optuna_study" and "--study-name" not in cmd:
             cmd += f" --study-name {self.study_name}"
         return cmd
+
+    # --- Local checkpoint helpers ----------------------------------------
+    def save_study_to_local(self, study: optuna.Study, total_trials_completed: int) -> bool:
+        if not self.local_checkpoint_dir:
+            return False
+        session_info = {
+            "study": study,
+            "total_trials_completed": total_trials_completed,
+            "sampler_name": self.sampler_name,
+            "pruner_name": self.pruner_name,
+            "study_name": self.study_name,
+        }
+        try:
+            self.local_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            local_path = self.local_checkpoint_dir / "study.pkl"
+            with open(local_path, 'wb') as f:
+                pickle.dump(session_info, f, protocol=pickle.HIGHEST_PROTOCOL)
+            logger.info(f"💾 Saved local study checkpoint: {local_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save local study: {e}")
+            return False
+
+    def load_study_from_local(self, path_or_dir: Optional[str]) -> Optional[Dict[str, Any]]:
+        candidate: Optional[Path] = None
+        try:
+            if path_or_dir and os.path.exists(path_or_dir):
+                p = Path(path_or_dir)
+                candidate = p if p.is_file() else (p / "study.pkl")
+            elif self.local_checkpoint_dir:
+                candidate = self.local_checkpoint_dir / "study.pkl"
+            if not candidate or not candidate.exists():
+                return None
+            with open(candidate, 'rb') as f:
+                session_info = pickle.load(f)
+            logger.info(f"✅ Loaded local study: {candidate}")
+            return session_info
+        except Exception as e:
+            logger.error(f"Failed to load local study: {e}")
+            return None
 
     def _start_pause_polling_thread(self) -> None:
         """Start a lightweight background thread to poll keyboard input for 'p'."""
