@@ -15,7 +15,7 @@ import os
 import pickle
 import tempfile
 import logging
-from typing import Optional, Dict, Any, Callable, Union, Type, List
+from typing import Optional, Dict, Any, Callable, Union, Type, List, Set
 import sys
 from pathlib import Path
 import threading
@@ -154,7 +154,11 @@ class PausibleOptunaOptimizer:
         self.simplify_param_names = simplify_param_names
         self.compile_mode = compile_mode
         self.optimizer_kwargs = optimizer_kwargs
-        self.persistent_config_overrides: Optional[Dict[str, Any]] = None  # Store config overrides from initial run
+        
+        # Initialize persistent_config_overrides early if we have args
+        self.persistent_config_overrides: Optional[Dict[str, Any]] = {}
+        if self.persist_args and self.args:
+            self._build_args_config_overrides()
         # Optional local checkpoint directory (for mirroring study.pkl)
         self.local_checkpoint_dir: Optional[Path] = None
         try:
@@ -976,6 +980,24 @@ class PausibleOptunaOptimizer:
         return f"python {script} --resume-from {local_path}"
 
     # --- Local checkpoint helpers ----------------------------------------
+    def _build_args_config_overrides(self):
+        """Build config overrides from args."""
+        if not self.args:
+            return
+            
+        args_dict = vars(self.args) if hasattr(self.args, '__dict__') else self.args
+        
+        for arg_name, arg_value in args_dict.items():
+            # Skip excluded args
+            if arg_name in self.args_exclude:
+                continue
+            # Skip None values and False boolean flags
+            if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
+                continue
+                
+            config_key = f"args.{arg_name}"
+            self.persistent_config_overrides[config_key] = arg_value
+    
     def save_study_to_local(self, study: optuna.Study, total_trials_completed: int) -> bool:
         if not self.local_checkpoint_dir:
             return False
