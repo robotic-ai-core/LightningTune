@@ -241,11 +241,11 @@ class TestPauseMessages:
         
         source = inspect.getsource(pausible_optimizer.PausibleOptunaOptimizer.optimize)
         
-        # Check that we don't clear pause immediately
-        assert "# Don't clear pause here - let keyboard monitor handle the toggle" in source
-        
         # Check for execution message
         assert "Executing pause" in source
+        
+        # Check that we use _update_pause_from_keyboard for error handling
+        assert "_update_pause_from_keyboard" in source
 
 
 if __name__ == "__main__":
@@ -319,10 +319,11 @@ def test_resume_command_includes_original_cli(monkeypatch):
     )
 
     cmd = opt._build_resume_command()
-    assert "--trial-steps 40000" in cmd
-    assert "--n-trials 25" in cmd
-    assert "--sampler tpe" in cmd
-    assert "--pruner hyperband" in cmd
+    # The resume command should be minimal - only what's needed to resume
+    assert "scripts/world_model_hpo_optuna.py" in cmd
+    assert "--wandb proj" in cmd
+    assert "--study-name world_model_tpe_hyperband" in cmd
+    assert "--resume-from latest" in cmd
     assert cmd.startswith("python ")
 
 

@@ -2,9 +2,11 @@
 Configuration utilities for merging and manipulating configs.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Union
+from pathlib import Path
 import copy
 import yaml
+import json
 
 
 def deep_merge_configs(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -126,3 +128,43 @@ def load_yaml_config(path: str) -> Dict[str, Any]:
     """
     with open(path, 'r') as f:
         return yaml.safe_load(f)
+
+
+def load_config(config_source: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Load configuration from file or dict.
+    
+    This is a unified config loader that handles:
+    - Dictionary configs (returned as-is)
+    - YAML files (.yaml, .yml)
+    - JSON files (.json)
+    
+    Args:
+        config_source: Configuration source - can be a dict, file path string, or Path object
+    
+    Returns:
+        Dictionary containing the configuration
+    
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        ValueError: If config file format is not supported
+    
+    Example:
+        >>> config = load_config("config.yaml")
+        >>> config = load_config({"model": {"lr": 0.01}})
+        >>> config = load_config(Path("config.json"))
+    """
+    if isinstance(config_source, dict):
+        return config_source
+    
+    config_path = Path(config_source)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    with open(config_path, 'r') as f:
+        if config_path.suffix in ['.yaml', '.yml']:
+            return yaml.safe_load(f)
+        elif config_path.suffix == '.json':
+            return json.load(f)
+        else:
+            raise ValueError(f"Unsupported config format: {config_path.suffix}")

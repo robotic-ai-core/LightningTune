@@ -24,7 +24,7 @@ from lightning.pytorch.callbacks import Callback
 
 from .search_space import OptunaSearchSpace
 from .callbacks import OptunaPruningCallback
-from ..utils.config_utils import apply_dotted_updates
+from ..utils.config_utils import apply_dotted_updates, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -159,20 +159,7 @@ class OptunaDrivenOptimizer:
     
     def _load_config(self, config_source: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
         """Load configuration from file or dict."""
-        if isinstance(config_source, dict):
-            return config_source
-        
-        config_path = Path(config_source)
-        if not config_path.exists():
-            raise FileNotFoundError(f"Config file not found: {config_path}")
-        
-        with open(config_path, 'r') as f:
-            if config_path.suffix in ['.yaml', '.yml']:
-                return yaml.safe_load(f)
-            elif config_path.suffix == '.json':
-                return json.load(f)
-            else:
-                raise ValueError(f"Unsupported config format: {config_path.suffix}")
+        return load_config(config_source)
     
     def create_objective(self) -> Callable[[optuna.Trial], float]:
         """

@@ -20,8 +20,6 @@ import sys
 from pathlib import Path
 import threading
 import time
-import subprocess
-import copy
 import yaml
 
 import optuna
@@ -153,8 +151,7 @@ class PausibleOptunaOptimizer:
         
         # Setup keyboard handler for 'p' key pause (robust terminal handling)
         self.keyboard_handler = None
-        # Backward-compatibility shim for tests expecting `keyboard_monitor`
-        # (they patch this attribute; optimize() no longer uses it directly)
+        # Backward-compatibility shim for tests (deprecated, will be removed)
         self.keyboard_monitor = None
         self._pause_requested: bool = False
         if enable_pause and os.environ.get("LT_CHILD", "0") != "1":
@@ -599,9 +596,8 @@ class PausibleOptunaOptimizer:
                 logger.error(f"Error during trial: {e}")
                 
                 # Check for pause request even after error
-                if self.keyboard_monitor and self.keyboard_monitor.is_pause_requested():
+                if self._update_pause_from_keyboard():
                     self.should_pause = True
-                    # Don't clear pause here - let keyboard monitor handle the toggle
                     logger.info("\n⏸️  Executing pause after error...")
                     if self.wandb_project:
                         logger.info("   Study will be saved to WandB for easy resume")
