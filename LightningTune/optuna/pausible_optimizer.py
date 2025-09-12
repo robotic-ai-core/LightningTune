@@ -84,7 +84,6 @@ class PausibleOptunaOptimizer:
         save_every_n_trials: int = 10,
         enable_pause: bool = True,
         use_reflow: bool = False,  # Option to use LightningReflow
-        isolate_trials: bool = False,
         **optimizer_kwargs
     ):
         """
@@ -115,7 +114,6 @@ class PausibleOptunaOptimizer:
         self.save_every_n_trials = save_every_n_trials
         self.enable_pause = enable_pause
         self.use_reflow = use_reflow
-        self.isolate_trials = isolate_trials
         self.optimizer_kwargs = optimizer_kwargs
         # Optional local checkpoint directory (for mirroring study.pkl)
         self.local_checkpoint_dir: Optional[Path] = None
@@ -518,6 +516,10 @@ class PausibleOptunaOptimizer:
                 # Run single trial with automatic garbage collection
                 # gc_after_trial=True ensures memory is cleaned between trials
                 study.optimize(objective, n_trials=1, show_progress_bar=False, gc_after_trial=True)
+                
+                # Additional memory cleanup to prevent accumulation
+                from .memory_cleanup import cleanup_trial_resources
+                cleanup_trial_resources()
                 
                 # Check if a new trial was actually finished (COMPLETE or PRUNED)
                 trials_after = len([t for t in study.trials 
