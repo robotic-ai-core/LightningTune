@@ -255,6 +255,190 @@ class TestPersistentConfigOverrides:
             assert optimizer.persistent_config_overrides == {}
 
 
+    def test_args_prefix_config_overrides(self, tmp_path):
+        """Test that args.* prefixed configs (from persistent-by-default) work correctly."""
+        
+        # Create optimizer with config overrides including args.* prefixed ones
+        config_overrides = {
+            "trial_steps": 5000,
+            "trainer.val_check_interval": 500,
+            "args.n_trials": 100,
+            "args.sampler": "tpe",
+            "args.pruner": "hyperband",
+            "args.patience": 10,
+            "args.test_mode": True,
+            "args.upload_checkpoints": True,
+            "args.config": "configs/base.yaml",
+            "args.wandb": "my-project"
+        }
+        
+        optimizer = PausibleOptunaOptimizer(
+            base_config={"test": "config"},
+            search_space=lambda trial: {"lr": trial.suggest_float("lr", 1e-4, 1e-2)},
+            model_class=MagicMock,
+            study_name="test_study",
+            save_every_n_trials=1,
+            local_checkpoint_dir=tmp_path / "checkpoints"
+        )
+        
+        # Set persistent overrides
+        optimizer.persistent_config_overrides = config_overrides
+        
+        # Create a dummy study
+        study = optuna.create_study()
+        study.optimize(lambda trial: trial.suggest_float("x", 0, 1), n_trials=2)
+        
+        # Save to local checkpoint
+        success = optimizer.save_study_to_local(study, 2)
+        assert success
+        
+        # Load and verify
+        checkpoint_file = tmp_path / "checkpoints" / "study.pkl"
+        assert checkpoint_file.exists()
+        
+        with open(checkpoint_file, 'rb') as f:
+            session_info = pickle.load(f)
+        
+        assert "config_overrides" in session_info
+        assert session_info["config_overrides"] == config_overrides
+        
+        # Verify all args.* prefixed configs are preserved
+        for key in config_overrides:
+            if key.startswith("args."):
+                assert session_info["config_overrides"][key] == config_overrides[key]
+        
+        # Test restoration
+        loaded_info = optimizer.load_study_from_local(str(tmp_path / "checkpoints"))
+        assert loaded_info is not None
+        assert "config_overrides" in loaded_info
+        
+        # All args.* configs should be restored
+        for key in config_overrides:
+            if key.startswith("args."):
+                assert loaded_info["config_overrides"][key] == config_overrides[key]
+
+
+    def test_argument_restoration_on_resume(self, tmp_path):
+        """Test that saved args.* values are properly restored when resuming.
+        
+        This test catches the bug where --trial-steps reverted to default 
+        instead of using the saved value of 40000.
+        """
+        # First, save a checkpoint with trial_steps=40000
+        saved_overrides = {
+            "args.trial_steps": 40000,  # Different from default 5000
+            "args.val_interval": 250,
+            "args.n_trials": 100,  # Different from default 50
+            "trainer.val_check_interval": 250,
+            "trial_steps": 40000,  # Also saved for backward compatibility
+        }
+        
+        optimizer = PausibleOptunaOptimizer(
+            base_config={"test": "config"},
+            search_space=lambda trial: {"lr": trial.suggest_float("lr", 1e-4, 1e-2)},
+            model_class=MagicMock,
+            study_name="test_study",
+            local_checkpoint_dir=tmp_path / "checkpoints"
+        )
+        
+        # Create and save a study with the overrides
+        study = optuna.create_study()
+        study.optimize(lambda trial: 0.5, n_trials=3)
+        
+        session_info = {
+            "study": study,
+            "total_trials_completed": 3,
+            "sampler_name": "tpe",
+            "pruner_name": "median",
+            "study_name": "test_study",
+            "config_overrides": saved_overrides
+        }
+        
+        checkpoint_file = tmp_path / "checkpoints" / "study.pkl"
+        checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(checkpoint_file, 'wb') as f:
+            pickle.dump(session_info, f)
+        
+        # Now simulate resuming with default argument values
+        # This simulates: python script.py --resume-from latest
+        # WITHOUT specifying --trial-steps
+        
+        class Args:
+            trial_steps = 5000  # Default value
+            val_interval = None  # Default value  
+            n_trials = 50  # Default value
+            resume_from = str(tmp_path / "checkpoints")
+            wandb = None
+            study_name = "test_study"
+        
+        args = Args()
+        
+        # Load the saved session
+        loaded_info = optimizer.load_study_from_local(args.resume_from)
+        assert loaded_info is not None
+        
+        # The critical test: args should be restored from saved values
+        saved_overrides = loaded_info["config_overrides"]
+        
+        # Verify the saved values exist
+        assert "args.trial_steps" in saved_overrides
+        assert saved_overrides["args.trial_steps"] == 40000
+        assert "args.n_trials" in saved_overrides
+        assert saved_overrides["args.n_trials"] == 100
+        
+        # This is what the script SHOULD do: restore args from saved values
+        NON_PERSISTENT_ARGS = {'resume_from', 'study_name'}
+        for key, value in saved_overrides.items():
+            if key.startswith("args."):
+                arg_name = key[5:]  # Remove "args." prefix
+                if arg_name not in NON_PERSISTENT_ARGS and hasattr(args, arg_name):
+                    setattr(args, arg_name, value)
+        
+        # After restoration, args should have the saved values, not defaults
+        assert args.trial_steps == 40000, f"Expected trial_steps=40000, got {args.trial_steps}"
+        assert args.n_trials == 100, f"Expected n_trials=100, got {args.n_trials}"
+        assert args.val_interval == 250, f"Expected val_interval=250, got {args.val_interval}"
+
+
+class TestResumeCommandPrintingConsistency:
+    """Test that resume command printing works consistently with args.* configs."""
+    
+    def test_resume_command_with_args_configs(self, tmp_path):
+        """Test that resume command is printed correctly with args.* prefixed configs."""
+        
+        # Create optimizer with both regular and args.* configs
+        optimizer = PausibleOptunaOptimizer(
+            base_config={"test": "config"},
+            search_space=lambda trial: {"lr": trial.suggest_float("lr", 1e-4, 1e-2)},
+            model_class=MagicMock,
+            study_name="test_study",
+            wandb_project="test-project",
+            local_checkpoint_dir=tmp_path / "checkpoints"
+        )
+        
+        # Set config overrides including args.* prefixed ones
+        optimizer.persistent_config_overrides = {
+            "trial_steps": 5000,
+            "args.n_trials": 100,
+            "args.sampler": "tpe",
+            "args.upload_checkpoints": True
+        }
+        
+        # Generate resume command
+        resume_cmd = optimizer._build_resume_command()
+        
+        # The command should include wandb and study name but NOT the args.* configs
+        # since those are already persisted
+        assert "--wandb test-project" in resume_cmd
+        assert "--study-name test_study" in resume_cmd
+        assert "--resume-from latest" in resume_cmd
+        
+        # Should not include args.* configs in the command since they're auto-restored
+        assert "--n-trials" not in resume_cmd
+        assert "--sampler" not in resume_cmd
+        assert "--upload-checkpoints" not in resume_cmd
+
+
 class TestStatusEmojis:
     """Test that status emojis are correctly assigned."""
     
