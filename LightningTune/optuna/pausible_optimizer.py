@@ -312,12 +312,15 @@ class PausibleOptunaOptimizer:
             
         api = wandb.Api()
         
+        artifact_name = f"{self.wandb_project}/{self.study_name}_checkpoint:{version}"
+        logger.info(f"🔍 Looking for WandB artifact: {artifact_name}")
+        
         try:
-            artifact = api.artifact(
-                f"{self.wandb_project}/{self.study_name}_checkpoint:{version}"
-            )
+            artifact = api.artifact(artifact_name)
+            logger.info(f"✅ Found artifact: {artifact.name} (version {artifact.version})")
         except wandb.errors.CommError as e:
-            logger.info(f"No existing study found in WandB: {e}")
+            logger.warning(f"❌ No WandB artifact found: {artifact_name}")
+            logger.debug(f"Error details: {e}")
             return None
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -363,19 +366,36 @@ class PausibleOptunaOptimizer:
         Returns:
             Optuna study with results
         """
-        # Resolve resume automatically (prefer local if available)
+        # Resolve resume automatically
         session_info = None
         if resume_from:
-            session_info = None
-            try:
-                if os.path.exists(resume_from):
+            logger.info(f"📥 Resume requested: {resume_from}")
+            
+            # First check if resume_from is a file path
+            if os.path.exists(resume_from):
+                logger.info(f"📁 Found local file: {resume_from}")
+                try:
                     session_info = self.load_study_from_local(resume_from)
-            except Exception:
-                session_info = None
-            if session_info is None and self.local_checkpoint_dir and self.local_checkpoint_dir.exists():
-                session_info = self.load_study_from_local(str(self.local_checkpoint_dir))
+                except Exception as e:
+                    logger.warning(f"Failed to load from file {resume_from}: {e}")
+                    session_info = None
+            
+            # If not a file or failed to load, try WandB (for "latest", "v3", etc.)
             if session_info is None and self.wandb_project:
+                logger.info(f"☁️  Attempting to load from WandB...")
                 session_info = self.load_study_from_wandb(resume_from)
+            
+            # Only fallback to local checkpoint if nothing else worked
+            if session_info is None and self.local_checkpoint_dir and self.local_checkpoint_dir.exists():
+                logger.info(f"💾 Trying local checkpoint fallback: {self.local_checkpoint_dir}")
+                session_info = self.load_study_from_local(str(self.local_checkpoint_dir))
+            
+            if session_info is None:
+                logger.error(f"❌ Failed to resume from '{resume_from}' - starting new study instead")
+                logger.info("   Possible reasons:")
+                logger.info("   - No checkpoint exists with this name")
+                logger.info("   - WandB project/study name mismatch")
+                logger.info("   - Network/authentication issues with WandB")
         
         if session_info:
             study = session_info["study"]
