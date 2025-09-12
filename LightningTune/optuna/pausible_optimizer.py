@@ -82,10 +82,17 @@ class PausibleOptunaOptimizer:
         save_every_n_trials: int = 10,
         enable_pause: bool = True,
         use_reflow: bool = False,  # Option to use LightningReflow
+        # New enhanced features
+        override_config: Optional[Union[str, Dict[str, Any]]] = None,
+        persist_args: bool = True,
+        args: Optional[Any] = None,
+        args_exclude: Optional[Set[str]] = None,
+        simplify_param_names: bool = True,
+        compile_mode: str = "safe",  # "off", "safe", "aggressive"
         **optimizer_kwargs
     ):
         """
-        Initialize the pausible optimizer.
+        Initialize the pausible optimizer with enhanced features.
         
         Args:
             base_config: Base configuration file path or dict
@@ -99,9 +106,36 @@ class PausibleOptunaOptimizer:
             save_every_n_trials: Save checkpoint every N trials
             enable_pause: Whether to enable 'p' key pause functionality
             use_reflow: Whether to use LightningReflow for better environment setup and compilation
+            override_config: Optional override configuration to layer on top of base_config
+            persist_args: Whether to automatically persist command-line arguments
+            args: Parsed command-line arguments to persist (if persist_args=True)
+            args_exclude: Set of argument names to exclude from persistence
+            simplify_param_names: Whether to simplify parameter names for cleaner logging
+            compile_mode: Torch compile mode - "off", "safe", or "aggressive"
             **optimizer_kwargs: Additional arguments for OptunaDrivenOptimizer
         """
-        self.base_config = base_config
+        # Handle layered configs if override_config is provided
+        if override_config is not None:
+            from ..utils import deep_merge_configs, load_yaml_config
+            
+            # Load base config
+            if isinstance(base_config, str):
+                base_dict = load_yaml_config(base_config)
+            else:
+                base_dict = base_config
+                
+            # Load override config
+            if isinstance(override_config, str):
+                override_dict = load_yaml_config(override_config)
+            else:
+                override_dict = override_config
+                
+            # Merge configs
+            self.base_config = deep_merge_configs(base_dict, override_dict)
+            logger.info(f"📑 Merged base and override configs")
+        else:
+            self.base_config = base_config
+            
         self.search_space = search_space
         self.model_class = model_class
         self.datamodule_class = datamodule_class
@@ -112,6 +146,13 @@ class PausibleOptunaOptimizer:
         self.save_every_n_trials = save_every_n_trials
         self.enable_pause = enable_pause
         self.use_reflow = use_reflow
+        
+        # New enhanced features
+        self.persist_args = persist_args
+        self.args = args
+        self.args_exclude = args_exclude or {'resume_from', 'study_name'}
+        self.simplify_param_names = simplify_param_names
+        self.compile_mode = compile_mode
         self.optimizer_kwargs = optimizer_kwargs
         self.persistent_config_overrides: Optional[Dict[str, Any]] = None  # Store config overrides from initial run
         # Optional local checkpoint directory (for mirroring study.pkl)
@@ -298,6 +339,57 @@ class PausibleOptunaOptimizer:
             logger.info(f"✅ Study saved to WandB: {self.study_name}_checkpoint (v{trials_completed})")
             return True
     
+    @staticmethod
+    def load_saved_session(
+        resume_from: str,
+        wandb_project: Optional[str] = None,
+        study_name: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Static method to load saved session without creating a full optimizer instance.
+        
+        Args:
+            resume_from: Path to local checkpoint or WandB version ("latest", "v3", etc.)
+            wandb_project: WandB project name (required if loading from WandB)
+            study_name: Study name (required if loading from WandB)
+            
+        Returns:
+            Session info dict or None if not found
+        """
+        import os
+        
+        # First check if it's a local file
+        if os.path.exists(resume_from):
+            logger.info(f"📁 Loading from local file: {resume_from}")
+            try:
+                if os.path.isdir(resume_from):
+                    checkpoint_file = Path(resume_from) / "study.pkl"
+                else:
+                    checkpoint_file = Path(resume_from)
+                    
+                with open(checkpoint_file, 'rb') as f:
+                    session_info = pickle.load(f)
+                logger.info(f"✅ Loaded session from {checkpoint_file}")
+                return session_info
+            except Exception as e:
+                logger.warning(f"Failed to load from {resume_from}: {e}")
+                return None
+        
+        # Try WandB if not a local file
+        if wandb_project and study_name:
+            logger.info(f"☁️  Attempting to load from WandB...")
+            temp_optimizer = PausibleOptunaOptimizer(
+                base_config={"dummy": "config"},
+                search_space=lambda trial: {},
+                model_class=type,  # Dummy class
+                wandb_project=wandb_project,
+                study_name=study_name,
+            )
+            return temp_optimizer.load_study_from_wandb(resume_from)
+        
+        logger.warning(f"Could not load session from {resume_from}")
+        return None
+    
     def load_study_from_wandb(self, version: str = "latest") -> Optional[Dict[str, Any]]:
         """
         Load study state from WandB artifact.
@@ -368,6 +460,42 @@ class PausibleOptunaOptimizer:
         Returns:
             Optuna study with results
         """
+        # Handle automatic argument persistence
+        if self.persist_args and self.args:
+            # Build config overrides from args
+            args_dict = vars(self.args) if hasattr(self.args, '__dict__') else self.args
+            
+            if config_overrides is None:
+                config_overrides = {}
+                
+            # Add args to config_overrides with args. prefix
+            for arg_name, arg_value in args_dict.items():
+                # Skip excluded args
+                if arg_name in self.args_exclude:
+                    continue
+                # Skip None values and False boolean flags
+                if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
+                    continue
+                    
+                config_key = f"args.{arg_name}"
+                config_overrides[config_key] = arg_value
+        
+        # Add torch compile settings based on compile_mode
+        if self.compile_mode and config_overrides is not None:
+            from ..utils.torch_compile import get_compile_settings_for_mode
+            compile_settings = get_compile_settings_for_mode(self.compile_mode)
+            if compile_settings:
+                if config_overrides is None:
+                    config_overrides = {}
+                config_overrides["model.init_args.torch_compile_settings"] = compile_settings
+                
+                if self.compile_mode == "off":
+                    logger.info("⚠️  Torch compilation disabled")
+                elif self.compile_mode == "safe":
+                    logger.info("🛡️  Using safe torch.compile settings for HPO")
+                elif self.compile_mode == "aggressive":
+                    logger.info("🚀 Using aggressive torch.compile settings")
+        
         # Resolve resume automatically
         session_info = None
         if resume_from:
@@ -407,6 +535,16 @@ class PausibleOptunaOptimizer:
             # Handle persistent config overrides
             saved_config_overrides = session_info.get("config_overrides", {}) or {}
             current_config_overrides = config_overrides or {}
+            
+            # Restore saved args to the args object if persist_args is enabled
+            if self.persist_args and self.args and saved_config_overrides:
+                for key, value in saved_config_overrides.items():
+                    if key.startswith("args."):
+                        arg_name = key[5:]  # Remove "args." prefix
+                        if arg_name not in self.args_exclude and hasattr(self.args, arg_name):
+                            # Restore the saved value to args
+                            setattr(self.args, arg_name, value)
+                            logger.debug(f"  ↻ Restored {arg_name} = {value}")
             
             # Merge saved and current overrides (current takes precedence)
             merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
@@ -610,6 +748,12 @@ class PausibleOptunaOptimizer:
                     # Get the latest trial to check if it was pruned
                     latest_trial = study.trials[-1]
                     status = "✅ COMPLETE" if latest_trial.state == optuna.trial.TrialState.COMPLETE else "⏭️ PRUNED"
+                    
+                    # Simplify param names for logging if enabled
+                    trial_params = latest_trial.params
+                    if self.simplify_param_names and trial_params:
+                        from ..utils.param_utils import simplify_param_names
+                        trial_params = simplify_param_names(trial_params)
                     
                     # Calculate updated progress
                     progress_percent = (self.total_trials_completed / n_trials) * 100
