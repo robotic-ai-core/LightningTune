@@ -175,11 +175,11 @@ class TestPersistentConfigOverrides:
             assert "🔄" in log_text  # Updated emoji
             assert "was: 4000" in log_text  # Old value shown
             assert "trainer.val_check_interval" in log_text
-            assert "✓" in log_text  # Unchanged emoji
+            assert "✅" in log_text  # Unchanged emoji (green)
             assert "trainer.enable_progress_bar" in log_text
-            assert "🆕" in log_text  # New emoji
+            assert "🆕" in log_text  # New emoji (blue/purple)
             assert "trainer.limit_val_batches" in log_text
-            assert "💾" in log_text  # Persistent emoji
+            assert "📌" in log_text  # Persistent emoji (red pin)
             
             # Verify merged overrides
             assert optimizer.persistent_config_overrides["trial_steps"] == 5000
@@ -263,10 +263,10 @@ class TestStatusEmojis:
         
         # This is more of a documentation test
         emoji_meanings = {
-            "💾": "persistent from checkpoint",
-            "🆕": "new override",
-            "🔄": "updated value",
-            "✓": "unchanged value"
+            "📌": "persistent from checkpoint (red pin)",
+            "🆕": "new override (blue/purple badge)",
+            "🔄": "updated value (blue circular arrows)",
+            "✅": "unchanged value (green checkmark)"
         }
         
         # Ensure emojis are distinct and meaningful

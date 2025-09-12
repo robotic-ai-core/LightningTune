@@ -431,22 +431,22 @@ class PausibleOptunaOptimizer:
                     if key in current_config_overrides:
                         if key in saved_config_overrides:
                             if saved_config_overrides[key] != current_config_overrides[key]:
-                                status_emoji = "🔄"  # Updated
+                                status_emoji = "🔄"  # Updated (blue/circular arrows)
                                 old_val = saved_config_overrides[key]
                                 logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
                                 logger.info(f"  └─ was: {old_val}")
                             else:
-                                status_emoji = "✓"  # Unchanged
+                                status_emoji = "✅"  # Unchanged (green checkmark)
                                 logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
                         else:
-                            status_emoji = "🆕"  # New override
+                            status_emoji = "🆕"  # New override (blue/purple NEW badge)
                             logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
                     else:
-                        status_emoji = "💾"  # Persistent from checkpoint
+                        status_emoji = "📌"  # Persistent from checkpoint (red pin)
                         logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
                 
                 logger.info(f"{'─'*60}")
-                logger.info("Status: 💾=persistent, 🆕=new, 🔄=updated, ✓=unchanged")
+                logger.info("Status: 📌=persistent, 🆕=new, 🔄=updated, ✅=unchanged")
             
             # Store merged overrides for future saves
             self.persistent_config_overrides = merged_config_overrides
