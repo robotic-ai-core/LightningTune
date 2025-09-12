@@ -113,6 +113,7 @@ class PausibleOptunaOptimizer:
         self.enable_pause = enable_pause
         self.use_reflow = use_reflow
         self.optimizer_kwargs = optimizer_kwargs
+        self.persistent_config_overrides: Optional[Dict[str, Any]] = None  # Store config overrides from initial run
         # Optional local checkpoint directory (for mirroring study.pkl)
         self.local_checkpoint_dir: Optional[Path] = None
         try:
@@ -240,6 +241,7 @@ class PausibleOptunaOptimizer:
                 "sampler_name": self.sampler_name,
                 "pruner_name": self.pruner_name,
                 "study_name": self.study_name,
+                "config_overrides": self.persistent_config_overrides,
             }
             
             pickle.dump(session_info, tmp, protocol=pickle.HIGHEST_PROTOCOL)
@@ -401,12 +403,55 @@ class PausibleOptunaOptimizer:
             study = session_info["study"]
             self.total_trials_completed = session_info["total_trials_completed"]
             self.should_pause = False  # Reset pause flag when resuming
+            
+            # Handle persistent config overrides
+            saved_config_overrides = session_info.get("config_overrides", {}) or {}
+            current_config_overrides = config_overrides or {}
+            
+            # Merge saved and current overrides (current takes precedence)
+            merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
+            
+            # Display resume information
             progress_percent = (self.total_trials_completed / n_trials) * 100
             remaining = n_trials - self.total_trials_completed
             logger.info(f"\n{'='*60}")
             logger.info(f"📂 RESUMING OPTIMIZATION")
             logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials already complete ({progress_percent:.1f}%)")
             logger.info(f"Remaining: {remaining} trials to run")
+            
+            # Display config overrides table if any exist
+            if merged_config_overrides:
+                logger.info(f"\n📋 Configuration Overrides:")
+                logger.info(f"{'─'*60}")
+                logger.info(f"{'Parameter':<35} {'Value':<15} {'Status':<10}")
+                logger.info(f"{'─'*60}")
+                
+                for key, value in sorted(merged_config_overrides.items()):
+                    status_emoji = ""
+                    if key in current_config_overrides:
+                        if key in saved_config_overrides:
+                            if saved_config_overrides[key] != current_config_overrides[key]:
+                                status_emoji = "🔄"  # Updated
+                                old_val = saved_config_overrides[key]
+                                logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
+                                logger.info(f"  └─ was: {old_val}")
+                            else:
+                                status_emoji = "✓"  # Unchanged
+                                logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
+                        else:
+                            status_emoji = "🆕"  # New override
+                            logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
+                    else:
+                        status_emoji = "💾"  # Persistent from checkpoint
+                        logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
+                
+                logger.info(f"{'─'*60}")
+                logger.info("Status: 💾=persistent, 🆕=new, 🔄=updated, ✓=unchanged")
+            
+            # Store merged overrides for future saves
+            self.persistent_config_overrides = merged_config_overrides
+            config_overrides = merged_config_overrides
+            
             logger.info(f"{'='*60}")
             
             # Verify study integrity - count finished trials (COMPLETE + PRUNED)
@@ -462,6 +507,20 @@ class PausibleOptunaOptimizer:
             if self.wandb_project:
                 logger.info(f"WandB project: {self.wandb_project}")
                 logger.info(f"Checkpoint frequency: every {self.save_every_n_trials} trials")
+            
+            # Store config overrides for new study
+            self.persistent_config_overrides = config_overrides or {}
+            
+            # Display initial config overrides if any
+            if self.persistent_config_overrides:
+                logger.info(f"\n📋 Configuration Overrides:")
+                logger.info(f"{'─'*60}")
+                logger.info(f"{'Parameter':<35} {'Value':<15}")
+                logger.info(f"{'─'*60}")
+                for key, value in sorted(self.persistent_config_overrides.items()):
+                    logger.info(f"{key:<35} {str(value):<15}")
+                logger.info(f"{'─'*60}")
+            
             logger.info(f"{'='*60}")
         
         # Merge optimizer kwargs
@@ -782,6 +841,7 @@ class PausibleOptunaOptimizer:
             "sampler_name": self.sampler_name,
             "pruner_name": self.pruner_name,
             "study_name": self.study_name,
+            "config_overrides": self.persistent_config_overrides,
         }
         try:
             self.local_checkpoint_dir.mkdir(parents=True, exist_ok=True)
