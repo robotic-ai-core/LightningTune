@@ -44,12 +44,13 @@ class TestAutoArgumentPersistence:
             local_checkpoint_dir=tmp_path / "checkpoints"
         )
         
-        # Mock the optimize method to check config_overrides
-        with patch.object(optimizer, '_create_underlying_optimizer') as mock_create:
+        # Mock the Reflow optimizer to prevent actual optimization
+        with patch('LightningTune.optuna.optimizer_reflow.ReflowOptunaDrivenOptimizer') as mock_reflow:
             mock_optimizer = MagicMock()
             mock_study = optuna.create_study()
             mock_optimizer.optimize.return_value = mock_study
-            mock_create.return_value = mock_optimizer
+            mock_optimizer.create_objective.return_value = lambda trial: 0.5
+            mock_reflow.return_value = mock_optimizer
             
             # Call optimize
             optimizer.optimize(n_trials=10)
@@ -125,13 +126,102 @@ class TestAutoArgumentPersistence:
             mock_optimizer.optimize.return_value = study
             mock_reflow.return_value = mock_optimizer
             
-            optimizer.optimize(n_trials=10, resume_from=str(checkpoint_dir))
+            optimizer.optimize(n_trials=10, resume_from=str(checkpoint_file))
             
             # Args should be restored to saved values
             assert args.trial_steps == 40000, f"Expected 40000, got {args.trial_steps}"
             assert args.n_trials == 100, f"Expected 100, got {args.n_trials}"
             assert args.val_interval == 250, f"Expected 250, got {args.val_interval}"
             assert args.test_mode == True, f"Expected True, got {args.test_mode}"
+    
+    def test_default_args_not_overriding_saved_values(self, tmp_path):
+        """Test that default argument values don't override saved values on resume."""
+        
+        # Create initial args with specific values (simulating first run)
+        class Args:
+            def __init__(self):
+                self.trial_steps = 40000  # User specified value
+                self.n_trials = 100  # User specified value
+                self.val_interval = 500  # User specified value
+                self.test_mode = False
+                self.wandb = "project"
+                self.study_name = "test_study"
+        
+        initial_args = Args()
+        
+        # Create saved session with these values
+        saved_overrides = {
+            "args.trial_steps": 40000,
+            "args.n_trials": 100,
+            "args.val_interval": 500,
+            "args.wandb": "project",
+            "trainer.val_check_interval": 500,
+        }
+        
+        study = optuna.create_study()
+        study.optimize(lambda trial: 0.5, n_trials=2)
+        
+        session_info = {
+            "study": study,
+            "total_trials_completed": 2,
+            "sampler_name": "tpe",
+            "pruner_name": "median",
+            "study_name": "test_study",
+            "config_overrides": saved_overrides
+        }
+        
+        # Save session
+        checkpoint_dir = tmp_path / "checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_file = checkpoint_dir / "study.pkl"
+        with open(checkpoint_file, 'wb') as f:
+            pickle.dump(session_info, f)
+        
+        # Create new args with defaults (simulating resume without specifying values)
+        class ResumeArgs:
+            def __init__(self):
+                self.trial_steps = 5000  # Default value - should NOT override saved 40000
+                self.n_trials = 50  # Default value - should NOT override saved 100
+                self.val_interval = None  # Default None - should NOT override saved 500
+                self.test_mode = False
+                self.wandb = None  # Default None - should NOT override saved "project"
+                self.study_name = "test_study"
+        
+        resume_args = ResumeArgs()
+        
+        # Mock sys.argv to simulate resume command without explicit args
+        import sys
+        original_argv = sys.argv
+        try:
+            sys.argv = ['script.py', '--resume-from', str(checkpoint_file)]
+            
+            # Create optimizer with persist_args enabled
+            optimizer = PausibleOptunaOptimizer(
+                base_config={"test": "config"},
+                search_space=lambda trial: {"lr": trial.suggest_float("lr", 1e-4, 1e-2)},
+                model_class=MagicMock,
+                study_name="test_study",
+                persist_args=True,
+                args=resume_args,
+                local_checkpoint_dir=checkpoint_dir
+            )
+            
+            # Resume and check args are restored, not overridden by defaults
+            with patch('LightningTune.optuna.optimizer_reflow.ReflowOptunaDrivenOptimizer') as mock_reflow:
+                mock_optimizer = MagicMock()
+                mock_optimizer.optimize.return_value = study
+                mock_optimizer.create_objective.return_value = lambda trial: 0.5
+                mock_reflow.return_value = mock_optimizer
+                
+                optimizer.optimize(n_trials=10, resume_from=str(checkpoint_file))
+                
+                # Args should retain saved values, not be overridden by defaults
+                assert resume_args.trial_steps == 40000, f"Expected saved value 40000, got {resume_args.trial_steps}"
+                assert resume_args.n_trials == 100, f"Expected saved value 100, got {resume_args.n_trials}"
+                assert resume_args.val_interval == 500, f"Expected saved value 500, got {resume_args.val_interval}"
+                assert resume_args.wandb == "project", f"Expected saved value 'project', got {resume_args.wandb}"
+        finally:
+            sys.argv = original_argv
 
 
 class TestConfigLayering:
@@ -266,16 +356,20 @@ class TestCompileModes:
             local_checkpoint_dir=tmp_path / "checkpoints"
         )
         
-        # Mock optimize to check config_overrides
+        # Mock the Reflow optimizer to prevent actual optimization
         with patch('LightningTune.optuna.optimizer_reflow.ReflowOptunaDrivenOptimizer') as mock_reflow:
             mock_optimizer = MagicMock()
             mock_study = optuna.create_study()
             mock_optimizer.optimize.return_value = mock_study
             mock_reflow.return_value = mock_optimizer
             
+            # Mock the create_objective to return a simple objective
+            mock_optimizer.create_objective.return_value = lambda trial: 0.5
+            
             optimizer.optimize(n_trials=1)
             
             # Check compile settings were added to config
+            assert optimizer.persistent_config_overrides is not None
             assert "model.init_args.torch_compile_settings" in optimizer.persistent_config_overrides
             settings = optimizer.persistent_config_overrides["model.init_args.torch_compile_settings"]
             assert settings["enabled"] is True
@@ -340,7 +434,7 @@ class TestIntegration:
                 compile_mode = "safe"
                 test_mode = True
                 wandb = None
-                study_name = "test_study"
+                study_name = "test_study"  # This will be excluded
             
             args = Args()
             
@@ -377,8 +471,18 @@ class TestIntegration:
                 
                 # Check all features worked
                 assert optimizer.persistent_config_overrides is not None
+                
+                # Check args persistence 
                 assert "args.n_trials" in optimizer.persistent_config_overrides
+                assert optimizer.persistent_config_overrides["args.n_trials"] == 10
                 assert "args.trial_steps" in optimizer.persistent_config_overrides
+                assert optimizer.persistent_config_overrides["args.trial_steps"] == 1000
+                assert "args.test_mode" in optimizer.persistent_config_overrides
+                assert optimizer.persistent_config_overrides["args.test_mode"] == True
+                assert "args.compile_mode" in optimizer.persistent_config_overrides
+                assert optimizer.persistent_config_overrides["args.compile_mode"] == "safe"
+                
+                # Check compile mode settings
                 assert "model.init_args.torch_compile_settings" in optimizer.persistent_config_overrides
                 
                 # Check logs for evidence of features

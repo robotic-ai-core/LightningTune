@@ -467,25 +467,62 @@ class PausibleOptunaOptimizer:
         # Handle automatic argument persistence
         if self.persist_args and self.args:
             # Build config overrides from args
-            args_dict = vars(self.args) if hasattr(self.args, '__dict__') else self.args
+            if hasattr(self.args, '__dict__'):
+                # Get all non-private attributes (handles both instance and class attributes)
+                args_dict = {
+                    attr: getattr(self.args, attr) 
+                    for attr in dir(self.args) 
+                    if not attr.startswith('_') and not callable(getattr(self.args, attr))
+                }
+            else:
+                args_dict = self.args
             
             if config_overrides is None:
                 config_overrides = {}
+            
+            # When resuming, only add args that were explicitly provided on command line
+            # This prevents defaults from overriding saved values
+            if resume_from:
+                import sys
+                # Get command line args to see what was explicitly provided
+                cmd_args = ' '.join(sys.argv)
                 
-            # Add args to config_overrides with args. prefix
-            for arg_name, arg_value in args_dict.items():
-                # Skip excluded args
-                if arg_name in self.args_exclude:
-                    continue
-                # Skip None values and False boolean flags
-                if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
-                    continue
+                for arg_name, arg_value in args_dict.items():
+                    # Skip excluded args
+                    if arg_name in self.args_exclude:
+                        continue
+                    # Skip None values and False boolean flags
+                    if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
+                        continue
                     
-                config_key = f"args.{arg_name}"
-                config_overrides[config_key] = arg_value
+                    # Check if this arg was explicitly provided on command line
+                    # Convert underscore to hyphen for command line format
+                    cmd_arg_name = arg_name.replace('_', '-')
+                    # Check various formats the arg could appear in
+                    arg_patterns = [
+                        f'--{cmd_arg_name}',
+                        f'--{arg_name}',  # Also check original name
+                    ]
+                    
+                    # Only add if explicitly provided
+                    if any(pattern in cmd_args for pattern in arg_patterns):
+                        config_key = f"args.{arg_name}"
+                        config_overrides[config_key] = arg_value
+            else:
+                # Not resuming - add all args as before
+                for arg_name, arg_value in args_dict.items():
+                    # Skip excluded args
+                    if arg_name in self.args_exclude:
+                        continue
+                    # Skip None values and False boolean flags
+                    if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
+                        continue
+                        
+                    config_key = f"args.{arg_name}"
+                    config_overrides[config_key] = arg_value
         
         # Add torch compile settings based on compile_mode
-        if self.compile_mode and config_overrides is not None:
+        if self.compile_mode:
             from ..utils.torch_compile import get_compile_settings_for_mode
             compile_settings = get_compile_settings_for_mode(self.compile_mode)
             if compile_settings:
