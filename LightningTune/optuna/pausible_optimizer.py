@@ -584,20 +584,33 @@ class PausibleOptunaOptimizer:
                     if key.startswith("args."):
                         arg_name = key[5:]  # Remove "args." prefix
                         if arg_name not in self.args_exclude and hasattr(self.args, arg_name):
-                            # Don't restore n_trials - allow extending sessions
-                            if arg_name == 'n_trials':
-                                logger.debug(f"  ⏭️  Skipping restoration of {arg_name} (allow extension)")
-                                continue
-                            # Restore the saved value to args
-                            setattr(self.args, arg_name, value)
-                            logger.debug(f"  ↻ Restored {arg_name} = {value}")
+                            # Check if this arg was explicitly provided on command line
+                            import sys
+                            cmd_args = ' '.join(sys.argv)
+                            cmd_arg_name = arg_name.replace('_', '-')
+                            arg_patterns = [f'--{cmd_arg_name}', f'--{arg_name}']
+
+                            # Only restore if NOT explicitly provided (explicit takes precedence)
+                            if not any(pattern in cmd_args for pattern in arg_patterns):
+                                # Restore the saved value to args
+                                setattr(self.args, arg_name, value)
+                                logger.debug(f"  ↻ Restored {arg_name} = {value}")
             
             # Merge saved and current overrides (current takes precedence)
-            # Remove n_trials from saved overrides to allow extension
-            filtered_saved_overrides = {k: v for k, v in saved_config_overrides.items()
-                                       if k != 'args.n_trials'}
-            merged_config_overrides = {**filtered_saved_overrides, **current_config_overrides}
-            
+            merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
+
+            # Check if n_trials was explicitly provided and differs from saved
+            # This helps users see that their session extension was recognized
+            saved_n_trials = saved_config_overrides.get('args.n_trials')
+            if saved_n_trials and n_trials != saved_n_trials:
+                # Add n_trials to display (but not to persistent config)
+                display_overrides = merged_config_overrides.copy()
+                display_overrides['n_trials (extended)'] = n_trials
+                # Store the old value for comparison
+                display_overrides['_old_n_trials'] = saved_n_trials
+            else:
+                display_overrides = merged_config_overrides
+
             # Display resume information
             progress_percent = (self.total_trials_completed / n_trials) * 100
             remaining = n_trials - self.total_trials_completed
@@ -607,13 +620,23 @@ class PausibleOptunaOptimizer:
             logger.info(f"Remaining: {remaining} trials to run")
             
             # Display config overrides table if any exist
-            if merged_config_overrides:
+            if display_overrides:
                 logger.info(f"\n📋 Configuration Overrides:")
                 logger.info(f"{'─'*60}")
                 logger.info(f"{'Parameter':<35} {'Value':<15} {'Status':<10}")
                 logger.info(f"{'─'*60}")
-                
-                for key, value in sorted(merged_config_overrides.items()):
+
+                old_n_trials_for_display = display_overrides.pop('_old_n_trials', None)
+
+                for key, value in sorted(display_overrides.items()):
+                    # Special handling for extended n_trials
+                    if key == 'n_trials (extended)':
+                        status_emoji = "📈"  # Growth/extension emoji
+                        logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
+                        if old_n_trials_for_display:
+                            logger.info(f"  └─ was: {old_n_trials_for_display}")
+                        continue
+
                     status_emoji = ""
                     if key in current_config_overrides:
                         if key in saved_config_overrides:
@@ -631,9 +654,9 @@ class PausibleOptunaOptimizer:
                     else:
                         status_emoji = "📌"  # Persistent from checkpoint (red pin)
                         logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
-                
+
                 logger.info(f"{'─'*60}")
-                logger.info("Status: 📌=persistent, ⭐=new, ✅=changed, 🔄=unchanged")
+                logger.info("Status: 📌=persistent, ⭐=new, ✅=changed, 🔄=unchanged, 📈=extended")
             
             # Store merged overrides for future saves
             self.persistent_config_overrides = merged_config_overrides
