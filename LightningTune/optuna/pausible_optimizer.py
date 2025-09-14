@@ -150,7 +150,8 @@ class PausibleOptunaOptimizer:
         # New enhanced features
         self.persist_args = persist_args
         self.args = args
-        self.args_exclude = args_exclude or {'resume_from', 'study_name'}
+        # n_trials should not be persisted - users should be able to extend sessions
+        self.args_exclude = args_exclude or {'resume_from', 'study_name', 'n_trials'}
         self.simplify_param_names = simplify_param_names
         self.compile_mode = compile_mode
         self.optimizer_kwargs = optimizer_kwargs
@@ -583,12 +584,19 @@ class PausibleOptunaOptimizer:
                     if key.startswith("args."):
                         arg_name = key[5:]  # Remove "args." prefix
                         if arg_name not in self.args_exclude and hasattr(self.args, arg_name):
+                            # Don't restore n_trials - allow extending sessions
+                            if arg_name == 'n_trials':
+                                logger.debug(f"  ⏭️  Skipping restoration of {arg_name} (allow extension)")
+                                continue
                             # Restore the saved value to args
                             setattr(self.args, arg_name, value)
                             logger.debug(f"  ↻ Restored {arg_name} = {value}")
             
             # Merge saved and current overrides (current takes precedence)
-            merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
+            # Remove n_trials from saved overrides to allow extension
+            filtered_saved_overrides = {k: v for k, v in saved_config_overrides.items()
+                                       if k != 'args.n_trials'}
+            merged_config_overrides = {**filtered_saved_overrides, **current_config_overrides}
             
             # Display resume information
             progress_percent = (self.total_trials_completed / n_trials) * 100

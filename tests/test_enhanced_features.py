@@ -128,9 +128,10 @@ class TestAutoArgumentPersistence:
             
             optimizer.optimize(n_trials=10, resume_from=str(checkpoint_file))
             
-            # Args should be restored to saved values
+            # Args should be restored to saved values (except n_trials which is extensible)
             assert args.trial_steps == 40000, f"Expected 40000, got {args.trial_steps}"
-            assert args.n_trials == 100, f"Expected 100, got {args.n_trials}"
+            # n_trials should NOT be restored - it's extensible
+            assert args.n_trials == 50, f"Expected 50 (not restored), got {args.n_trials}"
             assert args.val_interval == 250, f"Expected 250, got {args.val_interval}"
             assert args.test_mode == True, f"Expected True, got {args.test_mode}"
     
@@ -217,7 +218,8 @@ class TestAutoArgumentPersistence:
                 
                 # Args should retain saved values, not be overridden by defaults
                 assert resume_args.trial_steps == 40000, f"Expected saved value 40000, got {resume_args.trial_steps}"
-                assert resume_args.n_trials == 100, f"Expected saved value 100, got {resume_args.n_trials}"
+                # n_trials is extensible and should NOT be restored
+                assert resume_args.n_trials == 50, f"Expected default value 50 (not restored), got {resume_args.n_trials}"
                 assert resume_args.val_interval == 500, f"Expected saved value 500, got {resume_args.val_interval}"
                 assert resume_args.wandb == "project", f"Expected saved value 'project', got {resume_args.wandb}"
         finally:
@@ -472,9 +474,8 @@ class TestIntegration:
                 # Check all features worked
                 assert optimizer.persistent_config_overrides is not None
                 
-                # Check args persistence 
-                assert "args.n_trials" in optimizer.persistent_config_overrides
-                assert optimizer.persistent_config_overrides["args.n_trials"] == 10
+                # Check args persistence (n_trials is excluded from persistence)
+                assert "args.n_trials" not in optimizer.persistent_config_overrides  # n_trials is extensible
                 assert "args.trial_steps" in optimizer.persistent_config_overrides
                 assert optimizer.persistent_config_overrides["args.trial_steps"] == 1000
                 assert "args.test_mode" in optimizer.persistent_config_overrides
@@ -484,7 +485,103 @@ class TestIntegration:
                 
                 # Check compile mode settings
                 assert "model.init_args.torch_compile_settings" in optimizer.persistent_config_overrides
-                
+
                 # Check logs for evidence of features
                 log_text = caplog.text
                 assert "safe torch.compile settings" in log_text or "Using safe" in log_text
+
+
+class TestExtendingHPOSessions:
+    """Test extending HPO sessions with more trials on resume."""
+
+    def test_extending_hpo_session_with_more_trials(self, tmp_path):
+        """Test that users can extend HPO sessions by specifying more n_trials on resume."""
+        import pickle
+        from unittest.mock import MagicMock, patch
+        import optuna
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        checkpoint_file = tmp_path / "checkpoint.pkl"
+
+        # Create initial session with n_trials=50
+        initial_args = MagicMock()
+        initial_args.n_trials = 50
+        initial_args.trial_steps = 40000
+        initial_args.resume_from = None
+        initial_args.study_name = 'test_study'
+
+        # Create a saved session that completed 50 trials
+        study = optuna.create_study(direction='minimize')
+        for i in range(50):
+            study.add_trial(optuna.create_trial(
+                params={'param': i * 0.01},
+                distributions={'param': optuna.distributions.FloatDistribution(0, 1)},
+                values=[i * 0.01],
+                state=optuna.trial.TrialState.COMPLETE
+            ))
+
+        session_info = {
+            'study': study,
+            'total_trials_completed': 50,
+            'sampler_name': 'tpe',
+            'pruner_name': 'hyperband',
+            'study_name': 'test_study',
+            'config_overrides': {
+                'args.n_trials': 50,  # Original n_trials
+                'args.trial_steps': 40000
+            }
+        }
+
+        with open(checkpoint_file, 'wb') as f:
+            pickle.dump(session_info, f)
+
+        # Now resume with MORE trials (extend from 50 to 100)
+        resume_args = MagicMock()
+        resume_args.n_trials = 100  # USER WANTS TO EXTEND TO 100 TRIALS
+        resume_args.trial_steps = 40000
+        resume_args.resume_from = str(checkpoint_file)
+        resume_args.study_name = 'test_study'
+
+        # Mock sys.argv to simulate --n-trials 100 was explicitly provided
+        with patch('sys.argv', ['script.py', '--resume-from', str(checkpoint_file), '--n-trials', '100']):
+            resume_optimizer = PausibleOptunaOptimizer(
+                base_config={'test': 'config'},
+                search_space=lambda trial: {'param': trial.suggest_float('param', 0, 1)},
+                model_class=MagicMock,
+                datamodule_class=None,
+                wandb_project=None,
+                study_name='test_study',
+                sampler_name='tpe',
+                pruner_name='hyperband',
+                persist_args=True,
+                args=resume_args
+            )
+
+            # Mock the OptunaDrivenOptimizer creation
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOptimizer:
+                mock_optimizer_instance = MagicMock()
+                mock_objective = MagicMock()
+                mock_optimizer_instance.create_objective.return_value = mock_objective
+                MockOptimizer.return_value = mock_optimizer_instance
+
+                # Check that before optimize, we have 50 completed trials
+                # (This happens during initialization when loading the checkpoint)
+
+                # Resume the study with extended n_trials
+                result_study = resume_optimizer.optimize(
+                    n_trials=100,  # Extend to 100 trials total
+                    resume_from=str(checkpoint_file),
+                    config_overrides={},
+                    callbacks=[]
+                )
+
+                # Verify that n_trials was NOT restored from saved value
+                # It should remain at 100 as user specified
+                assert resume_args.n_trials == 100  # Should NOT be restored to 50
+
+                # Check that after optimize, we have 100 completed trials
+                # This means it successfully ran 50 more trials (100 - 50)
+                assert resume_optimizer.total_trials_completed == 100
+
+                # Verify study has 100 trials total
+                assert len(result_study.trials) == 100
