@@ -599,17 +599,14 @@ class PausibleOptunaOptimizer:
             # Merge saved and current overrides (current takes precedence)
             merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
 
-            # Check if n_trials was explicitly provided and differs from saved
-            # This helps users see that their session extension was recognized
+            # Check if n_trials was extended and add to display
             saved_n_trials = saved_config_overrides.get('args.n_trials')
             if saved_n_trials and n_trials != saved_n_trials:
-                # Add n_trials to display (but not to persistent config)
-                display_overrides = merged_config_overrides.copy()
-                display_overrides['n_trials (extended)'] = n_trials
-                # Store the old value for comparison
-                display_overrides['_old_n_trials'] = saved_n_trials
-            else:
-                display_overrides = merged_config_overrides
+                # Add n_trials to show it was changed
+                merged_config_overrides['n_trials'] = n_trials
+                current_config_overrides['n_trials'] = n_trials
+                # Store old value for display
+                saved_config_overrides['n_trials'] = saved_n_trials
 
             # Display resume information
             progress_percent = (self.total_trials_completed / n_trials) * 100
@@ -620,23 +617,13 @@ class PausibleOptunaOptimizer:
             logger.info(f"Remaining: {remaining} trials to run")
             
             # Display config overrides table if any exist
-            if display_overrides:
+            if merged_config_overrides:
                 logger.info(f"\n📋 Configuration Overrides:")
                 logger.info(f"{'─'*60}")
                 logger.info(f"{'Parameter':<35} {'Value':<15} {'Status':<10}")
                 logger.info(f"{'─'*60}")
 
-                old_n_trials_for_display = display_overrides.pop('_old_n_trials', None)
-
-                for key, value in sorted(display_overrides.items()):
-                    # Special handling for extended n_trials
-                    if key == 'n_trials (extended)':
-                        status_emoji = "📈"  # Growth/extension emoji
-                        logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
-                        if old_n_trials_for_display:
-                            logger.info(f"  └─ was: {old_n_trials_for_display}")
-                        continue
-
+                for key, value in sorted(merged_config_overrides.items()):
                     status_emoji = ""
                     if key in current_config_overrides:
                         if key in saved_config_overrides:
@@ -656,7 +643,7 @@ class PausibleOptunaOptimizer:
                         logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
 
                 logger.info(f"{'─'*60}")
-                logger.info("Status: 📌=persistent, ⭐=new, ✅=changed, 🔄=unchanged, 📈=extended")
+                logger.info("Status: 📌=persistent, ⭐=new, ✅=changed, 🔄=unchanged")
             
             # Store merged overrides for future saves
             self.persistent_config_overrides = merged_config_overrides
