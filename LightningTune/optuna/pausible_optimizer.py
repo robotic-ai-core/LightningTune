@@ -798,10 +798,11 @@ class PausibleOptunaOptimizer:
                 cleanup_trial_resources()
                 
                 # Check if a new trial was actually finished (COMPLETE or PRUNED)
-                trials_after = len([t for t in study.trials 
+                trials_after = len([t for t in study.trials
                                    if t.state in [optuna.trial.TrialState.COMPLETE,
                                                   optuna.trial.TrialState.PRUNED]])
-                
+
+
                 if trials_after > trials_before:
                     # Trial finished (either completed or pruned)
                     self.total_trials_completed = trials_after
@@ -827,14 +828,20 @@ class PausibleOptunaOptimizer:
                     logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials complete ({progress_percent:.1f}%)")
                     logger.info(f"Remaining: {remaining_trials} trials")
                     
-                    if study.best_trial:
-                        logger.info(
-                            f"Current Best: {study.best_value:.6f} (from trial {study.best_trial.number})"
-                        )
-                    else:
+                    try:
+                        # study.best_trial raises an exception if no COMPLETE trials exist
+                        best_trial = study.best_trial
+                        if best_trial:
+                            logger.info(
+                                f"Current Best: {study.best_value:.6f} (from trial {best_trial.number})"
+                            )
+                        else:
+                            logger.info(f"Current Best: No successful trials yet")
+                    except (ValueError, RuntimeError):
+                        # This happens when there are no COMPLETE trials (only PRUNED)
                         logger.info(f"Current Best: No successful trials yet")
                     logger.info(f"{'─'*60}")
-                    
+
                     # Always mirror local checkpoint if configured
                     if self.local_checkpoint_dir:
                         self.save_study_to_local(study, self.total_trials_completed)
@@ -1073,6 +1080,21 @@ class PausibleOptunaOptimizer:
             with open(local_path, 'wb') as f:
                 pickle.dump(session_info, f, protocol=pickle.HIGHEST_PROTOCOL)
             logger.info(f"💾 Saved local study checkpoint: {local_path}")
+
+            # Also save session args as YAML for easier inspection
+            session_args = {
+                "n_trials": self.persistent_config_overrides.get("args.n_trials", None),
+                "save_every": self.save_every_n_trials,
+                "isolate_trials": self.persistent_config_overrides.get("args.isolate_trials", True),
+                "sampler_name": self.sampler_name,
+                "pruner_name": self.pruner_name,
+                "study_name": self.study_name,
+                "total_trials_completed": total_trials_completed,
+            }
+            session_args_path = self.local_checkpoint_dir / "session_args.yaml"
+            with open(session_args_path, 'w') as f:
+                yaml.dump(session_args, f, default_flow_style=False)
+
             return True
         except Exception as e:
             logger.error(f"Failed to save local study: {e}")
