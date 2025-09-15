@@ -635,3 +635,54 @@ class TestExtendingHPOSessions:
 
                 # Verify study has 100 trials total
                 assert len(result_study.trials) == 100
+
+    def test_resuming_without_n_trials_uses_saved_value(self, tmp_path):
+        """Test that resuming without specifying n_trials uses the saved value."""
+        import pickle
+        from unittest.mock import MagicMock
+        import optuna
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        checkpoint_file = tmp_path / "checkpoint.pkl"
+
+        # Create a saved session with n_trials=100 that completed 50 trials
+        study = optuna.create_study(direction='minimize')
+        for i in range(50):
+            study.add_trial(optuna.create_trial(
+                params={'param': i * 0.01},
+                distributions={'param': optuna.distributions.FloatDistribution(0, 1)},
+                values=[i * 0.01],
+                state=optuna.trial.TrialState.COMPLETE
+            ))
+
+        session_info = {
+            'study': study,
+            'total_trials_completed': 50,
+            'sampler_name': 'tpe',
+            'pruner_name': 'median',
+            'study_name': 'test_study',
+            'config_overrides': {
+                'args.n_trials': 100,  # Original n_trials was 100
+                'args.trial_steps': 5000
+            }
+        }
+
+        with open(checkpoint_file, 'wb') as f:
+            pickle.dump(session_info, f)
+
+        # Resume WITHOUT specifying n_trials (should use saved value of 100)
+        resume_args = MagicMock()
+        resume_args.n_trials = 50  # Default value in args
+        resume_args.trial_steps = 5000
+        resume_args.resume_from = str(checkpoint_file)
+        resume_args.study_name = 'test_study'
+
+        # Load the saved session
+        loaded_session = PausibleOptunaOptimizer.load_saved_session(
+            resume_from=str(checkpoint_file)
+        )
+
+        assert loaded_session is not None
+        assert 'config_overrides' in loaded_session
+        assert loaded_session['config_overrides']['args.n_trials'] == 100
+        assert loaded_session['total_trials_completed'] == 50

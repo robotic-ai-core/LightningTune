@@ -602,13 +602,12 @@ class PausibleOptunaOptimizer:
             # Always update n_trials to the current value (it may have been extended)
             merged_config_overrides['args.n_trials'] = n_trials
 
-            # Check if n_trials was extended and add to display
+            # Check if n_trials was extended and add display-only entries
             saved_n_trials = saved_config_overrides.get('args.n_trials')
             if saved_n_trials and n_trials != saved_n_trials:
-                # Add n_trials to show it was changed
+                # Add display-only entries to show it was changed (without args. prefix)
                 merged_config_overrides['n_trials'] = n_trials
                 current_config_overrides['n_trials'] = n_trials
-                # Store old value for display
                 saved_config_overrides['n_trials'] = saved_n_trials
 
             # Display resume information
