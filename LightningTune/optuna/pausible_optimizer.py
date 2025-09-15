@@ -599,16 +599,20 @@ class PausibleOptunaOptimizer:
             # Merge saved and current overrides (current takes precedence)
             merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
 
-            # Always update n_trials to the current value (it may have been extended)
-            merged_config_overrides['args.n_trials'] = n_trials
+            # Remove any persisted n_trials - it should NOT be persisted
+            # Users should be able to extend sessions with different n_trials values
+            if 'args.n_trials' in merged_config_overrides:
+                del merged_config_overrides['args.n_trials']
+            if 'n_trials' in merged_config_overrides:
+                del merged_config_overrides['n_trials']
 
-            # Check if n_trials was extended and add display-only entries
+            # Check if n_trials was extended and add display-only entry
+            # Note: n_trials itself is passed as a parameter and shouldn't be in config overrides
             saved_n_trials = saved_config_overrides.get('args.n_trials')
             if saved_n_trials and n_trials != saved_n_trials:
-                # Add display-only entries to show it was changed (without args. prefix)
-                merged_config_overrides['n_trials'] = n_trials
+                # Store the values for display in the config table
+                # These are for informational purposes only, not actual config overrides
                 current_config_overrides['n_trials'] = n_trials
-                saved_config_overrides['n_trials'] = saved_n_trials
 
             # Display resume information
             progress_percent = (self.total_trials_completed / n_trials) * 100
@@ -618,34 +622,45 @@ class PausibleOptunaOptimizer:
             logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials already complete ({progress_percent:.1f}%)")
             logger.info(f"Remaining: {remaining} trials to run")
             
-            # Display config overrides table if any exist
-            if merged_config_overrides:
+            # Display config overrides table if any exist (or n_trials info)
+            # Special handling for n_trials display
+            display_items = merged_config_overrides.copy()
+            if saved_n_trials and n_trials != saved_n_trials:
+                # Add n_trials info for display (not a real config override)
+                display_items['n_trials (extended)'] = f"{saved_n_trials} → {n_trials}"
+
+            if display_items:
                 logger.info(f"\n📋 Configuration Overrides:")
                 logger.info(f"{'─'*60}")
                 logger.info(f"{'Parameter':<35} {'Value':<15} {'Status':<10}")
                 logger.info(f"{'─'*60}")
 
-                for key, value in sorted(merged_config_overrides.items()):
-                    status_emoji = ""
-                    if key in current_config_overrides:
-                        if key in saved_config_overrides:
-                            if saved_config_overrides[key] != current_config_overrides[key]:
-                                status_emoji = "✅"  # Updated/changed value (green checkmark)
-                                old_val = saved_config_overrides[key]
-                                logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
-                                logger.info(f"  └─ was: {old_val}")
+                for key, value in sorted(display_items.items()):
+                    # Special handling for n_trials display
+                    if 'n_trials' in key:
+                        status_emoji = "🔢"  # Special emoji for n_trials extension
+                        logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
+                    else:
+                        status_emoji = ""
+                        if key in current_config_overrides:
+                            if key in saved_config_overrides:
+                                if saved_config_overrides[key] != current_config_overrides[key]:
+                                    status_emoji = "✅"  # Updated/changed value (green checkmark)
+                                    old_val = saved_config_overrides[key]
+                                    logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
+                                    logger.info(f"  └─ was: {old_val}")
+                                else:
+                                    status_emoji = "🔄"  # Unchanged - specified again with same value
+                                    logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
                             else:
-                                status_emoji = "🔄"  # Unchanged - specified again with same value
+                                status_emoji = "⭐"  # New parameter added (yellow star)
                                 logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
                         else:
-                            status_emoji = "⭐"  # New parameter added (yellow star)
+                            status_emoji = "📌"  # Persistent from checkpoint (red pin)
                             logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
-                    else:
-                        status_emoji = "📌"  # Persistent from checkpoint (red pin)
-                        logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
 
                 logger.info(f"{'─'*60}")
-                logger.info("Status: 📌=persistent, ⭐=new, ✅=changed, 🔄=unchanged")
+                logger.info("Status: 📌=persistent, ⭐=new, ✅=changed, 🔄=unchanged, 🔢=n_trials extended")
             
             # Store merged overrides for future saves
             self.persistent_config_overrides = merged_config_overrides
@@ -1053,8 +1068,8 @@ class PausibleOptunaOptimizer:
         args_dict = vars(self.args) if hasattr(self.args, '__dict__') else self.args
 
         for arg_name, arg_value in args_dict.items():
-            # Skip excluded args EXCEPT n_trials (we want to save it for display purposes)
-            if arg_name in self.args_exclude and arg_name != 'n_trials':
+            # Skip excluded args (n_trials should NOT be persisted)
+            if arg_name in self.args_exclude:
                 continue
             # Skip None values and False boolean flags
             if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
