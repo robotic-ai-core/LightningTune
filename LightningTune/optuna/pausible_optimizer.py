@@ -599,6 +599,9 @@ class PausibleOptunaOptimizer:
             # Merge saved and current overrides (current takes precedence)
             merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
 
+            # Always update n_trials to the current value (it may have been extended)
+            merged_config_overrides['args.n_trials'] = n_trials
+
             # Check if n_trials was extended and add to display
             saved_n_trials = saved_config_overrides.get('args.n_trials')
             if saved_n_trials and n_trials != saved_n_trials:
@@ -705,8 +708,9 @@ class PausibleOptunaOptimizer:
                 logger.info(f"WandB project: {self.wandb_project}")
                 logger.info(f"Checkpoint frequency: every {self.save_every_n_trials} trials")
             
-            # Store config overrides for new study
-            self.persistent_config_overrides = config_overrides or {}
+            # Store config overrides for new study (merge with args-based overrides)
+            if config_overrides:
+                self.persistent_config_overrides.update(config_overrides)
             
             # Display initial config overrides if any
             if self.persistent_config_overrides:
@@ -1039,17 +1043,17 @@ class PausibleOptunaOptimizer:
         """Build config overrides from args."""
         if not self.args:
             return
-            
+
         args_dict = vars(self.args) if hasattr(self.args, '__dict__') else self.args
-        
+
         for arg_name, arg_value in args_dict.items():
-            # Skip excluded args
-            if arg_name in self.args_exclude:
+            # Skip excluded args EXCEPT n_trials (we want to save it for display purposes)
+            if arg_name in self.args_exclude and arg_name != 'n_trials':
                 continue
             # Skip None values and False boolean flags
             if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
                 continue
-                
+
             config_key = f"args.{arg_name}"
             self.persistent_config_overrides[config_key] = arg_value
     

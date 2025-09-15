@@ -494,6 +494,56 @@ class TestIntegration:
 class TestExtendingHPOSessions:
     """Test extending HPO sessions with more trials on resume."""
 
+    def test_n_trials_saved_to_checkpoint(self, tmp_path):
+        """Test that n_trials is correctly saved to checkpoint."""
+        from argparse import Namespace
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+        from unittest.mock import MagicMock
+        import pickle
+        import optuna
+
+        # Create initial study with n_trials=100
+        args = Namespace(
+            n_trials=100,  # Set to 100 initially
+            trial_steps=5000,
+            save_every=10,
+            sampler='tpe',
+            pruner='median',
+            wandb=None,
+            resume_from=None,
+            safe_compile=True
+        )
+
+        optimizer = PausibleOptunaOptimizer(
+            base_config={"learning_rate": 0.001},
+            search_space=lambda trial: {"lr": trial.suggest_float("lr", 1e-4, 1e-2)},
+            model_class=MagicMock,
+            args=args,
+            persist_args=True,
+            local_checkpoint_dir=tmp_path
+        )
+
+        # Simulate running 5 trials and saving checkpoint
+        study = optuna.create_study()
+        for i in range(5):
+            study.add_trial(optuna.trial.create_trial(value=i, params={}))
+
+        # Save checkpoint
+        success = optimizer.save_study_to_local(study, 5)
+        assert success, "Failed to save checkpoint"
+
+        # Load checkpoint and verify n_trials was saved
+        checkpoint_file = tmp_path / "study.pkl"
+        assert checkpoint_file.exists()
+
+        with open(checkpoint_file, 'rb') as f:
+            session_info = pickle.load(f)
+
+        # Check that n_trials was saved
+        assert "config_overrides" in session_info
+        assert "args.n_trials" in session_info["config_overrides"]
+        assert session_info["config_overrides"]["args.n_trials"] == 100
+
     def test_extending_hpo_session_with_more_trials(self, tmp_path):
         """Test that users can extend HPO sessions by specifying more n_trials on resume."""
         import pickle
