@@ -606,13 +606,10 @@ class PausibleOptunaOptimizer:
             if 'n_trials' in merged_config_overrides:
                 del merged_config_overrides['n_trials']
 
-            # Check if n_trials was extended and add display-only entry
+            # Check if n_trials was extended for display purposes
             # Note: n_trials itself is passed as a parameter and shouldn't be in config overrides
             saved_n_trials = saved_config_overrides.get('args.n_trials')
-            if saved_n_trials and n_trials != saved_n_trials:
-                # Store the values for display in the config table
-                # These are for informational purposes only, not actual config overrides
-                current_config_overrides['n_trials'] = n_trials
+            # DO NOT add n_trials to current_config_overrides as it would persist
 
             # Display resume information
             progress_percent = (self.total_trials_completed / n_trials) * 100
@@ -1097,8 +1094,8 @@ class PausibleOptunaOptimizer:
             logger.info(f"💾 Saved local study checkpoint: {local_path}")
 
             # Also save session args as YAML for easier inspection
+            # Note: n_trials should NOT be saved as it needs to be extensible
             session_args = {
-                "n_trials": self.persistent_config_overrides.get("args.n_trials", None),
                 "save_every": self.save_every_n_trials,
                 "isolate_trials": self.persistent_config_overrides.get("args.isolate_trials", True),
                 "sampler_name": self.sampler_name,
