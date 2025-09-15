@@ -150,8 +150,8 @@ class PausibleOptunaOptimizer:
         # New enhanced features
         self.persist_args = persist_args
         self.args = args
-        # n_trials should not be persisted - users should be able to extend sessions
-        self.args_exclude = args_exclude or {'resume_from', 'study_name', 'n_trials'}
+        # Only exclude resume_from and study_name - n_trials should persist but be overridable
+        self.args_exclude = args_exclude or {'resume_from', 'study_name'}
         self.simplify_param_names = simplify_param_names
         self.compile_mode = compile_mode
         self.optimizer_kwargs = optimizer_kwargs
@@ -596,20 +596,27 @@ class PausibleOptunaOptimizer:
                                 setattr(self.args, arg_name, value)
                                 logger.debug(f"  ↻ Restored {arg_name} = {value}")
             
+            # Check if n_trials was overridden
+            saved_n_trials = saved_config_overrides.get('args.n_trials')
+            n_trials_extended = False
+            if saved_n_trials and n_trials != saved_n_trials:
+                n_trials_extended = True
+                logger.info(f"📈 n_trials extended from {saved_n_trials} to {n_trials}")
+
             # Merge saved and current overrides (current takes precedence)
             merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
 
-            # Remove any persisted n_trials - it should NOT be persisted
-            # Users should be able to extend sessions with different n_trials values
-            if 'args.n_trials' in merged_config_overrides:
-                del merged_config_overrides['args.n_trials']
-            if 'n_trials' in merged_config_overrides:
-                del merged_config_overrides['n_trials']
+            # Update n_trials in persistent config if it was extended
+            if n_trials_extended:
+                # Update the saved n_trials value to the new extended value
+                merged_config_overrides['args.n_trials'] = n_trials
 
-            # Check if n_trials was extended for display purposes
-            # Note: n_trials itself is passed as a parameter and shouldn't be in config overrides
-            saved_n_trials = saved_config_overrides.get('args.n_trials')
-            # DO NOT add n_trials to current_config_overrides as it would persist
+            # Create a copy for passing to the optimizer (without n_trials since it's a separate param)
+            optimizer_config_overrides = merged_config_overrides.copy()
+            if 'args.n_trials' in optimizer_config_overrides:
+                del optimizer_config_overrides['args.n_trials']
+            if 'n_trials' in optimizer_config_overrides:
+                del optimizer_config_overrides['n_trials']
 
             # Display resume information
             progress_percent = (self.total_trials_completed / n_trials) * 100
@@ -619,12 +626,18 @@ class PausibleOptunaOptimizer:
             logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials already complete ({progress_percent:.1f}%)")
             logger.info(f"Remaining: {remaining} trials to run")
             
-            # Display config overrides table if any exist (or n_trials info)
-            # Special handling for n_trials display
-            display_items = merged_config_overrides.copy()
-            if saved_n_trials and n_trials != saved_n_trials:
-                # Add n_trials info for display (not a real config override)
-                display_items['n_trials (extended)'] = f"{saved_n_trials} → {n_trials}"
+            # Display config overrides table if any exist
+            # For display, we want to show n_trials specially (not args.n_trials)
+            display_items = {}
+            for key, value in merged_config_overrides.items():
+                if key == 'args.n_trials':
+                    # Show as 'n_trials' instead of 'args.n_trials' for cleaner display
+                    if n_trials_extended:
+                        display_items['n_trials'] = f"{saved_n_trials} → {n_trials}"
+                    else:
+                        display_items['n_trials'] = value
+                else:
+                    display_items[key] = value
 
             if display_items:
                 logger.info(f"\n📋 Configuration Overrides:")
@@ -634,8 +647,11 @@ class PausibleOptunaOptimizer:
 
                 for key, value in sorted(display_items.items()):
                     # Special handling for n_trials display
-                    if 'n_trials' in key:
-                        status_emoji = "🔢"  # Special emoji for n_trials extension
+                    if key == 'n_trials':
+                        if '→' in str(value):
+                            status_emoji = "📈"  # Extended/increased
+                        else:
+                            status_emoji = "📌"  # Persistent from original
                         logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
                     else:
                         status_emoji = ""
@@ -657,11 +673,12 @@ class PausibleOptunaOptimizer:
                             logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
 
                 logger.info(f"{'─'*60}")
-                logger.info("Status: 📌=persistent, ⭐=new, ✅=changed, 🔄=unchanged, 🔢=n_trials extended")
+                logger.info("Status: 📌=persistent, ⭐=new, ✅=changed, 🔄=unchanged, 📈=extended")
             
-            # Store merged overrides for future saves
+            # Store merged overrides for future saves (includes n_trials if extended)
             self.persistent_config_overrides = merged_config_overrides
-            config_overrides = merged_config_overrides
+            # Use the version without n_trials for the optimizer
+            config_overrides = optimizer_config_overrides
             
             logger.info(f"{'='*60}")
             
@@ -1094,8 +1111,8 @@ class PausibleOptunaOptimizer:
             logger.info(f"💾 Saved local study checkpoint: {local_path}")
 
             # Also save session args as YAML for easier inspection
-            # Note: n_trials should NOT be saved as it needs to be extensible
             session_args = {
+                "n_trials": self.persistent_config_overrides.get("args.n_trials", None),
                 "save_every": self.save_every_n_trials,
                 "isolate_trials": self.persistent_config_overrides.get("args.isolate_trials", True),
                 "sampler_name": self.sampler_name,
