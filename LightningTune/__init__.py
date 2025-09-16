@@ -15,11 +15,13 @@ try:
     from .optuna.optimizer import OptunaDrivenOptimizer
     from .optuna.optimizer import OptunaDrivenOptimizer as ConfigDrivenOptimizer  # Alias for compatibility
     from .optuna.pausible_optimizer import PausibleOptunaOptimizer
+    from .hpo_runner import HPORunner
 except ImportError as e:
     warnings.warn(f"Optuna optimizers not available: {e}")
     OptunaDrivenOptimizer = None
     ConfigDrivenOptimizer = None
     PausibleOptunaOptimizer = None
+    HPORunner = None
 
 # Optuna components
 try:
@@ -88,6 +90,7 @@ __all__ = [
     "ConfigDrivenOptimizer",  # Alias for backward compatibility
     "OptunaDrivenOptimizer",
     "PausibleOptunaOptimizer",
+    "HPORunner",
     "WandBOptunaOptimizer",
     
     # Search spaces

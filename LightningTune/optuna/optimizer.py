@@ -169,8 +169,8 @@ class OptunaDrivenOptimizer:
             Objective function that takes a trial and returns a metric value
         """
         def objective(trial: optuna.Trial) -> float:
-            # Start with base config
-            config = self.base_config.copy()
+            # Start with base config (defensive for None / empty YAML)
+            config = (self.base_config or {}).copy()
             # Ensure deterministic seeding for vanilla path if seed present
             try:
                 import lightning.pytorch as pl

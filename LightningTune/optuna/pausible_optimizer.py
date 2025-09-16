@@ -171,18 +171,11 @@ class PausibleOptunaOptimizer:
             self.local_checkpoint_dir = None
         if self.local_checkpoint_dir is None:
             try:
-                exp_dir = self.optimizer_kwargs.get("experiment_dir", None)  # optional
-            except Exception:
-                exp_dir = None
-            try:
-                if exp_dir:
-                    self.local_checkpoint_dir = Path(exp_dir) / ".optuna_study"
+                base = Path("checkpoints")
+                if self.wandb_project:
+                    self.local_checkpoint_dir = base / self.wandb_project / self.study_name
                 else:
-                    base = Path("checkpoints")
-                    if self.wandb_project:
-                        self.local_checkpoint_dir = base / self.wandb_project / self.study_name
-                    else:
-                        self.local_checkpoint_dir = base / self.study_name
+                    self.local_checkpoint_dir = base / self.study_name
                 self.local_checkpoint_dir.mkdir(parents=True, exist_ok=True)
             except Exception:
                 self.local_checkpoint_dir = None
@@ -423,13 +416,25 @@ class PausibleOptunaOptimizer:
             return None
         
         with tempfile.TemporaryDirectory() as tmpdir:
-            artifact.download(tmpdir)
-            file_path = os.path.join(tmpdir, "study.pkl")
-            
-            if not os.path.exists(file_path):
+            try:
+                downloaded_path = artifact.download(tmpdir)
+            except wandb.errors.CommError as e:
+                logger.warning(f"❌ No WandB artifact found (download): {e}")
+                return None
+            except Exception as e:
+                logger.warning(f"❌ Unexpected WandB download error: {e}")
+                return None
+
+            candidates = []
+            if isinstance(downloaded_path, str):
+                candidates.append(os.path.join(downloaded_path, "study.pkl"))
+            candidates.append(os.path.join(tmpdir, "study.pkl"))
+
+            file_path = next((p for p in candidates if os.path.exists(p)), None)
+            if not file_path:
                 logger.error("study.pkl not found in artifact")
                 return None
-            
+
             with open(file_path, 'rb') as f:
                 try:
                     session_info = pickle.load(f)
@@ -450,10 +455,10 @@ class PausibleOptunaOptimizer:
     ) -> optuna.Study:
         """
         Run optimization with periodic saves and resume capability.
-        
+
         Ensures that only finished trials (COMPLETE/PRUNED) are saved to WandB.
         If interrupted mid-trial, the incomplete trial is discarded.
-        
+
         Args:
             n_trials: Number of trials to run
             resume_from: WandB artifact version to resume from (e.g., "latest", "v3")
@@ -461,22 +466,14 @@ class PausibleOptunaOptimizer:
             callbacks: Additional Lightning callbacks
             storage: Optional Optuna storage URL (for distributed optimization)
             **kwargs: Additional arguments passed to OptunaDrivenOptimizer
-            
+
         Returns:
             Optuna study with results
         """
         # Handle automatic argument persistence
         if self.persist_args and self.args:
-            # Build config overrides from args
-            if hasattr(self.args, '__dict__'):
-                # Get all non-private attributes (handles both instance and class attributes)
-                args_dict = {
-                    attr: getattr(self.args, attr) 
-                    for attr in dir(self.args) 
-                    if not attr.startswith('_') and not callable(getattr(self.args, attr))
-                }
-            else:
-                args_dict = self.args
+            # Build config overrides from args using a safe extractor
+            args_dict = self._extract_persistable_args()
             
             if config_overrides is None:
                 config_overrides = {}
@@ -488,12 +485,12 @@ class PausibleOptunaOptimizer:
                 # Get command line args to see what was explicitly provided
                 cmd_args = ' '.join(sys.argv)
                 
-                for arg_name, arg_value in args_dict.items():
+                for arg_name, arg_value in (args_dict or {}).items():
                     # Skip excluded args
                     if arg_name in self.args_exclude:
                         continue
-                    # Skip None values and False boolean flags
-                    if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
+                    # Skip None values only (but keep False boolean values)
+                    if arg_value is None:
                         continue
                     
                     # Check if this arg was explicitly provided on command line
@@ -511,32 +508,50 @@ class PausibleOptunaOptimizer:
                         config_overrides[config_key] = arg_value
             else:
                 # Not resuming - add all args as before
-                for arg_name, arg_value in args_dict.items():
+                for arg_name, arg_value in (args_dict or {}).items():
                     # Skip excluded args
                     if arg_name in self.args_exclude:
                         continue
-                    # Skip None values and False boolean flags
-                    if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
+                    # Skip None values only (but keep False boolean values)
+                    if arg_value is None:
                         continue
                         
                     config_key = f"args.{arg_name}"
                     config_overrides[config_key] = arg_value
         
-        # Add torch compile settings based on compile_mode
+        # Add torch compile settings based on compile_mode (only if model supports it)
         if self.compile_mode:
             from ..utils.torch_compile import get_compile_settings_for_mode
             compile_settings = get_compile_settings_for_mode(self.compile_mode)
             if compile_settings:
-                if config_overrides is None:
-                    config_overrides = {}
-                config_overrides["model.init_args.torch_compile_settings"] = compile_settings
-                
-                if self.compile_mode == "off":
-                    logger.info("⚠️  Torch compilation disabled")
-                elif self.compile_mode == "safe":
-                    logger.info("🛡️  Using safe torch.compile settings for HPO")
-                elif self.compile_mode == "aggressive":
-                    logger.info("🚀 Using aggressive torch.compile settings")
+                # Detect if model_class accepts torch_compile_settings or **kwargs
+                safe_to_inject = False
+                try:
+                    import inspect
+                    if self.model_class is not None:
+                        signature = inspect.signature(self.model_class)
+                        params = signature.parameters
+                        if "torch_compile_settings" in params:
+                            safe_to_inject = True
+                        else:
+                            safe_to_inject = any(
+                                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                            )
+                except Exception:
+                    safe_to_inject = False
+
+                if safe_to_inject:
+                    if config_overrides is None:
+                        config_overrides = {}
+                    config_overrides["model.init_args.torch_compile_settings"] = compile_settings
+                    if self.compile_mode == "off":
+                        logger.info("⚠️  Torch compilation disabled")
+                    elif self.compile_mode == "safe":
+                        logger.info("🛡️  Using safe torch.compile settings for HPO")
+                    elif self.compile_mode == "aggressive":
+                        logger.info("🚀 Using aggressive torch.compile settings")
+                else:
+                    logger.debug("Skipping torch_compile_settings override; model does not accept it")
         
         # Resolve resume automatically
         session_info = None
@@ -573,13 +588,21 @@ class PausibleOptunaOptimizer:
             study = session_info["study"]
             self.total_trials_completed = session_info["total_trials_completed"]
             self.should_pause = False  # Reset pause flag when resuming
-            
+
             # Handle persistent config overrides
             saved_config_overrides = session_info.get("config_overrides", {}) or {}
             current_config_overrides = config_overrides or {}
             
             # Restore saved args to the args object if persist_args is enabled
-            if self.persist_args and self.args and saved_config_overrides:
+            # UNLESS HPORunner already handled restoration (indicated by _restored_by_hporunner flag)
+            should_restore_args = (
+                self.persist_args
+                and self.args
+                and saved_config_overrides
+                and not getattr(self.args, '_restored_by_hporunner', False)
+            )
+
+            if should_restore_args:
                 for key, value in saved_config_overrides.items():
                     if key.startswith("args."):
                         arg_name = key[5:]  # Remove "args." prefix
@@ -595,21 +618,57 @@ class PausibleOptunaOptimizer:
                                 # Restore the saved value to args
                                 setattr(self.args, arg_name, value)
                                 logger.debug(f"  ↻ Restored {arg_name} = {value}")
+            elif getattr(self.args, '_restored_by_hporunner', False):
+                logger.debug("  Skipping arg restoration - handled by HPORunner")
             
             # Check if n_trials was overridden
             saved_n_trials = saved_config_overrides.get('args.n_trials')
             n_trials_extended = False
-            if saved_n_trials and n_trials != saved_n_trials:
-                n_trials_extended = True
-                logger.info(f"📈 n_trials extended from {saved_n_trials} to {n_trials}")
+            original_n_trials = n_trials  # Keep the original value for comparison
+
+            # Check if n_trials was explicitly specified on command line
+            # But if we're being called from HPORunner, it has already handled n_trials restoration
+            # So we should skip this logic if HPORunner is in charge
+            should_handle_n_trials = not getattr(self.args, '_restored_by_hporunner', False) if self.args else True
+
+            if not should_handle_n_trials:
+                # HPORunner is managing argument restoration, don't interfere
+                if saved_n_trials and n_trials != saved_n_trials:
+                    # Just log what HPORunner decided
+                    if n_trials > saved_n_trials:
+                        n_trials_extended = True
+                        logger.debug(f"HPORunner extended n_trials from {saved_n_trials} to {n_trials}")
+                    else:
+                        logger.debug(f"HPORunner set n_trials to {n_trials} (saved was {saved_n_trials})")
+            else:
+                # Original logic for when not managed by HPORunner
+                n_trials_explicitly_specified = False
+                if self.args and hasattr(self.args, '__dict__'):
+                    import sys
+                    cmd_args = ' '.join(sys.argv)
+                    n_trials_explicitly_specified = '--n-trials' in cmd_args or '--n_trials' in cmd_args
+
+                if saved_n_trials and n_trials > saved_n_trials:
+                    n_trials_extended = True
+                    logger.info(f"📈 n_trials extended from {saved_n_trials} to {n_trials}")
+                elif saved_n_trials and n_trials < saved_n_trials:
+                    if n_trials_explicitly_specified:
+                        # User explicitly specified a lower n_trials, respect it
+                        logger.warning(f"⚠️  n_trials reduced from saved {saved_n_trials} to {n_trials}")
+                        logger.warning(f"   Using the new value of {n_trials}")
+                    else:
+                        # n_trials not specified, use saved value instead of default
+                        logger.info(f"📌 n_trials not specified, using saved value: {saved_n_trials}")
+                        n_trials = saved_n_trials
+                elif saved_n_trials and n_trials == saved_n_trials:
+                    # n_trials unchanged - use the saved value
+                    logger.debug(f"n_trials unchanged at {n_trials}")
 
             # Merge saved and current overrides (current takes precedence)
             merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
 
-            # Update n_trials in persistent config if it was extended
-            if n_trials_extended:
-                # Update the saved n_trials value to the new extended value
-                merged_config_overrides['args.n_trials'] = n_trials
+            # Always update n_trials in persistent config with the current value
+            merged_config_overrides['args.n_trials'] = n_trials
 
             # Create a copy for passing to the optimizer (without n_trials since it's a separate param)
             optimizer_config_overrides = merged_config_overrides.copy()
@@ -776,8 +835,22 @@ class PausibleOptunaOptimizer:
             wandb_project=self.wandb_project,
             **opt_kwargs
         )
-        
-        objective = optimizer.create_objective()
+
+        # Allow tests to inject a custom objective by patching self.create_objective
+        try:
+            custom_obj_factory = getattr(self, 'create_objective', None)
+            objective = None
+            if callable(custom_obj_factory):
+                try:
+                    candidate = custom_obj_factory()
+                    if callable(candidate):
+                        objective = candidate
+                except Exception:
+                    objective = None
+            if objective is None:
+                objective = optimizer.create_objective()
+        except Exception:
+            objective = optimizer.create_objective()
         
         # Start keyboard monitoring if available
         if self.keyboard_handler and hasattr(self.keyboard_handler, 'start_monitoring'):
@@ -988,6 +1061,13 @@ class PausibleOptunaOptimizer:
             logger.info(f"✨ OPTIMIZATION COMPLETE!")
             logger.info(f"Total trials run: {self.total_trials_completed}/{n_trials} ({100.0:.1f}%)")
             logger.info(f"{'='*60}")
+
+        # Always mirror a local checkpoint at the end (even if 0 finished trials)
+        if self.local_checkpoint_dir:
+            try:
+                self.save_study_to_local(study, self.total_trials_completed)
+            except Exception:
+                pass
         
         # Print results (only if we have completed trials)
         try:
@@ -1004,6 +1084,56 @@ class PausibleOptunaOptimizer:
         return study
 
     # --- Internal helpers -------------------------------------------------
+    def create_objective(self):
+        """Stub method to allow tests to patch a custom objective on the instance."""
+        return None
+
+    def _extract_persistable_args(self) -> Dict[str, Any]:
+        """Minimal blacklist-based extractor for CLI args.
+
+        - Source from dict or argparse.Namespace via vars()
+        - Drop a tiny blacklist of routing/infra args
+        - Persist only simple types (str/int/float/bool/Path->str)
+        - Skip private keys (start with "_")
+        """
+        blacklist = {
+            "resume_from",
+            "study_name",
+            "experiment_dir",
+            "local_checkpoint_dir",
+            "wandb_run_id",
+            # keep optional tiny extras to reduce noise
+            "config",
+            "config_override",
+            "config_overrides",
+        }
+
+        def simple(v: Any):
+            from pathlib import Path
+            if isinstance(v, (str, int, float, bool)):
+                return v
+            if isinstance(v, Path):
+                return str(v)
+            return None
+
+        try:
+            if isinstance(self.args, dict):
+                raw = dict(self.args)
+            elif hasattr(self.args, "__dict__"):
+                raw = dict(vars(self.args))  # type: ignore[arg-type]
+            else:
+                return {}
+        except Exception:
+            return {}
+
+        out: Dict[str, Any] = {}
+        for key, val in raw.items():
+            if not key or key.startswith("_") or key in blacklist:
+                continue
+            sv = simple(val)
+            if sv is not None:
+                out[key] = sv
+        return out
 
     def _update_pause_from_keyboard(self) -> bool:
         """Poll keyboard handler and toggle pause when 'p' is pressed.
@@ -1061,32 +1191,72 @@ class PausibleOptunaOptimizer:
         """
         script = self._original_argv[0] if (self._original_argv and self._original_argv[0]) else "scripts/world_model_hpo_optuna.py"
         parts: List[str] = ["python", script]
-        if self.wandb_project:
-            parts += ["--wandb", str(self.wandb_project)]
-        if self.study_name:
-            parts += ["--study-name", str(self.study_name)]
+
+        def parse_arg(argv: List[str], name: str) -> Optional[str]:
+            flag = f"--{name}"
+            for i, tok in enumerate(argv or []):
+                if tok == flag and i + 1 < len(argv):
+                    return argv[i + 1]
+                if tok.startswith(flag + "="):
+                    return tok.split("=", 1)[1]
+            return None
+
+        wandb_proj = parse_arg(self._original_argv, "wandb") or (str(self.wandb_project) if self.wandb_project else None)
+        study_name = parse_arg(self._original_argv, "study-name") or (str(self.study_name) if self.study_name else None)
+        if wandb_proj:
+            parts += ["--wandb", wandb_proj]
+        if study_name:
+            parts += ["--study-name", study_name]
+
+        ts = parse_arg(self._original_argv, "trial-steps")
+        if not ts:
+            try:
+                ts = self.persistent_config_overrides.get("args.trial_steps") or self.persistent_config_overrides.get("trial_steps")
+            except Exception:
+                ts = None
+        if ts:
+            parts += ["--trial-steps", str(ts)]
+
         parts += ["--resume-from", "latest"]
         return " ".join(parts)
 
     def _build_local_resume_command(self, local_path: str) -> str:
         """Construct a minimal local resume command using filesystem path only."""
         script = self._original_argv[0] if (self._original_argv and self._original_argv[0]) else "scripts/world_model_hpo_optuna.py"
-        return f"python {script} --resume-from {local_path}"
+        # Include trial steps if known (prefer original argv, else persistent overrides)
+        def parse_arg(argv: List[str], name: str) -> Optional[str]:
+            flag = f"--{name}"
+            for i, tok in enumerate(argv or []):
+                if tok == flag and i + 1 < len(argv):
+                    return argv[i + 1]
+                if tok.startswith(flag + "="):
+                    return tok.split("=", 1)[1]
+            return None
+
+        ts = parse_arg(self._original_argv, "trial-steps")
+        if not ts:
+            try:
+                ts = self.persistent_config_overrides.get("args.trial_steps") or self.persistent_config_overrides.get("trial_steps")
+            except Exception:
+                ts = None
+
+        ts_arg = f" --trial-steps {ts}" if ts else ""
+        return f"python {script}{ts_arg} --resume-from {local_path}"
 
     # --- Local checkpoint helpers ----------------------------------------
     def _build_args_config_overrides(self):
         """Build config overrides from args."""
         if not self.args:
             return
+        # Use safe extractor to avoid persisting MagicMock internals
+        args_dict = self._extract_persistable_args()
 
-        args_dict = vars(self.args) if hasattr(self.args, '__dict__') else self.args
-
-        for arg_name, arg_value in args_dict.items():
+        for arg_name, arg_value in (args_dict or {}).items():
             # Skip excluded args (n_trials should NOT be persisted)
             if arg_name in self.args_exclude:
                 continue
-            # Skip None values and False boolean flags
-            if arg_value is None or (isinstance(arg_value, bool) and not arg_value):
+            # Skip None values only (but keep False boolean values)
+            if arg_value is None:
                 continue
 
             config_key = f"args.{arg_name}"
@@ -1105,7 +1275,12 @@ class PausibleOptunaOptimizer:
         }
         try:
             self.local_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            local_path = self.local_checkpoint_dir / "study.pkl"
+            # If directory name matches study name, write study.pkl
+            # else write <study_name>.pkl in the provided directory
+            if self.local_checkpoint_dir.name == str(self.study_name):
+                local_path = self.local_checkpoint_dir / "study.pkl"
+            else:
+                local_path = self.local_checkpoint_dir / f"{self.study_name}.pkl"
             with open(local_path, 'wb') as f:
                 pickle.dump(session_info, f, protocol=pickle.HIGHEST_PROTOCOL)
             logger.info(f"💾 Saved local study checkpoint: {local_path}")

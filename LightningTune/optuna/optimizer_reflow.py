@@ -202,8 +202,8 @@ class ReflowOptunaDrivenOptimizer:
             Objective function that takes a trial and returns a metric value
         """
         def objective(trial: optuna.Trial) -> float:
-            # Start with base config
-            config = self.base_config.copy()
+            # Start with base config (defensive for None)
+            config = (self.base_config or {}).copy()
             
             # Apply fixed config overrides first
             if self.config_overrides:
@@ -261,7 +261,20 @@ class ReflowOptunaDrivenOptimizer:
                 except ImportError:
                     pass  # NaN detection not available
             
-            # Add checkpoint callback if requested
+            # Configure trainer settings (must come BEFORE any use of trainer_config)
+            trainer_config = config.get('trainer', {})
+            trainer_config.pop('callbacks', None)  # Remove any existing callbacks config
+            trainer_config.pop('logger', None)  # Will be set by Reflow or below
+
+            # Do not mutate max_steps here; prefer config-driven control
+
+            # Prefer automatic device selection unless explicitly set
+            if 'accelerator' not in trainer_config:
+                trainer_config['accelerator'] = 'auto'
+            if 'devices' not in trainer_config:
+                trainer_config['devices'] = 'auto'
+
+            # Add checkpoint callback if requested and ensure checkpointing is enabled
             if self.save_checkpoints:
                 from lightning.pytorch.callbacks import ModelCheckpoint
                 checkpoint_callback = ModelCheckpoint(
@@ -272,12 +285,15 @@ class ReflowOptunaDrivenOptimizer:
                     save_top_k=1,
                 )
                 callbacks.append(checkpoint_callback)
-            
-            # Configure trainer settings
-            trainer_config = config.get('trainer', {})
-            trainer_config.pop('callbacks', None)  # Remove any existing callbacks config
-            trainer_config.pop('logger', None)  # Will be set by Reflow or below
-            
+                # Ensure Trainer is allowed to use checkpoint callbacks
+                try:
+                    # Respect explicit True and override only when explicitly disabled
+                    if trainer_config.get('enable_checkpointing') is False:
+                        trainer_config['enable_checkpointing'] = True
+                except Exception:
+                    # If trainer_config is not a plain dict-like, set defensively
+                    trainer_config['enable_checkpointing'] = True
+
             # Setup WandB logger if requested
             # Add prune-on-exception to free resources on early failures
             try:
@@ -431,6 +447,15 @@ class ReflowOptunaDrivenOptimizer:
             datamodule = None
         
         # Create trainer
+        # If a ModelCheckpoint is present in callbacks, ensure checkpointing isn't disabled
+        try:
+            from lightning.pytorch.callbacks import ModelCheckpoint as _ModelCheckpoint
+            if any(isinstance(cb, _ModelCheckpoint) for cb in callbacks):
+                if trainer_config.get('enable_checkpointing') is False:
+                    trainer_config['enable_checkpointing'] = True
+        except Exception:
+            pass
+
         trainer = Trainer(
             callbacks=callbacks,
             **trainer_config
