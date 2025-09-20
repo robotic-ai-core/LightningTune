@@ -17,6 +17,7 @@ from lightning import LightningModule
 from lightning.pytorch.callbacks import Callback
 
 from .optuna.pausible_optimizer import PausibleOptunaOptimizer
+from .persistence import build_local_resume_command as persist_build_local_resume_command
 from .utils import load_yaml_config, deep_merge_configs
 
 logger = logging.getLogger(__name__)
@@ -329,6 +330,19 @@ class HPORunner:
                     logger.info(f"💡 To run more trials, use --n-trials with a value > {completed}")
                     logger.info(f"{'='*60}")
 
+                # New: persist the loaded checkpoint to a local temp file and switch resume_from
+                try:
+                    import tempfile as _tempfile
+                    with _tempfile.NamedTemporaryFile(delete=False, suffix='.pkl') as _tmpf:
+                        pickle.dump(checkpoint, _tmpf)
+                        _tmpf.flush()
+                        os.fsync(_tmpf.fileno())
+                        self.args.resume_from = _tmpf.name
+                        logger.info(f"🔁 Using local checkpoint copy for resume: {self.args.resume_from}")
+                except Exception:
+                    # If this fails, keep original behavior
+                    pass
+
         # Build config overrides from final args
         self.config_overrides = self._build_config_overrides()
 
@@ -405,6 +419,17 @@ class HPORunner:
         if hasattr(self.args, '__dict__'):
             self.args._restored_by_hporunner = True
 
+        # Determine an absolute local checkpoint directory so local resume paths are reliable
+        # Use current working directory as the anchor to avoid module-relative saves
+        try:
+            base_ckpt_dir = Path.cwd() / "checkpoints"
+            if self.args.wandb:
+                _local_ckpt_dir = base_ckpt_dir / str(self.args.wandb) / str(self.args.study_name)
+            else:
+                _local_ckpt_dir = base_ckpt_dir / str(self.args.study_name)
+        except Exception:
+            _local_ckpt_dir = None
+
         optimizer = PausibleOptunaOptimizer(
             base_config=final_config,
             search_space=self.search_space,
@@ -423,6 +448,8 @@ class HPORunner:
             # Critical: disable Lightning checkpoints during HPO to avoid conflicts
             # with enable_checkpointing=False in HPO configs
             save_checkpoints=False,
+            # Mirror study checkpoints locally under an absolute path for reliable resume
+            local_checkpoint_dir=(str(_local_ckpt_dir) if _local_ckpt_dir is not None else None),
         )
 
         # Run optimization

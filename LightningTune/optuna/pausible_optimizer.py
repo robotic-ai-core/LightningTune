@@ -30,6 +30,20 @@ from lightning.pytorch.callbacks import Callback
 from .optimizer import OptunaDrivenOptimizer
 from .optimizer_reflow import ReflowOptunaDrivenOptimizer
 from .factories import create_sampler, create_pruner
+from ..persistence import (
+    save_study_to_local as persist_save_study_to_local,
+    load_study_from_local as persist_load_study_from_local,
+    save_study_to_wandb as persist_save_study_to_wandb,
+    load_study_from_wandb as persist_load_study_from_wandb,
+    load_saved_session as persist_load_saved_session,
+    build_resume_command as persist_build_resume_command,
+    build_local_resume_command as persist_build_local_resume_command,
+)
+from ..arg_persistence import (
+    merge_args_with_saved,
+    normalize_n_trials_in_overrides,
+    extend_or_align_n_trials,
+)
 try:
     # Ensure Reflow package is importable when used as a submodule
     reflow_path = Path(__file__).parent.parent.parent.parent / "LightningReflow"
@@ -81,14 +95,14 @@ class PausibleOptunaOptimizer:
         pruner_name: str = "median",
         save_every_n_trials: int = 10,
         enable_pause: bool = True,
-        use_reflow: bool = False,  # Option to use LightningReflow
+        use_reflow: bool = True,  # Default to Reflow for testability and robust IO
         # New enhanced features
         override_config: Optional[Union[str, Dict[str, Any]]] = None,
         persist_args: bool = True,
         args: Optional[Any] = None,
         args_exclude: Optional[Set[str]] = None,
         simplify_param_names: bool = True,
-        compile_mode: str = "safe",  # "off", "safe", "aggressive"
+        compile_mode: Optional[str] = None,  # None means default SAFE without persisting
         **optimizer_kwargs
     ):
         """
@@ -150,10 +164,12 @@ class PausibleOptunaOptimizer:
         # New enhanced features
         self.persist_args = persist_args
         self.args = args
-        # Only exclude resume_from and study_name - n_trials should persist but be overridable
+        # Persist all args by default except resume_from and study_name. n_trials is persisted and auto-restored.
         self.args_exclude = args_exclude or {'resume_from', 'study_name'}
         self.simplify_param_names = simplify_param_names
-        self.compile_mode = compile_mode
+        # Track whether compile_mode is explicitly provided
+        self._compile_mode_explicit = compile_mode is not None
+        self.compile_mode = compile_mode or "safe"
         self.optimizer_kwargs = optimizer_kwargs
         
         # Initialize persistent_config_overrides early if we have args
@@ -188,6 +204,7 @@ class PausibleOptunaOptimizer:
         # Track progress
         self.total_trials_completed = 0
         self.should_pause = False
+        self._quit_after_current = False
         
         # Setup keyboard handler for 'p' key pause (robust terminal handling)
         self.keyboard_handler = None
@@ -343,106 +360,18 @@ class PausibleOptunaOptimizer:
         wandb_project: Optional[str] = None,
         study_name: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """
-        Static method to load saved session without creating a full optimizer instance.
-        
-        Args:
-            resume_from: Path to local checkpoint or WandB version ("latest", "v3", etc.)
-            wandb_project: WandB project name (required if loading from WandB)
-            study_name: Study name (required if loading from WandB)
-            
-        Returns:
-            Session info dict or None if not found
-        """
-        import os
-        
-        # First check if it's a local file
-        if os.path.exists(resume_from):
-            logger.info(f"📁 Loading from local file: {resume_from}")
-            try:
-                if os.path.isdir(resume_from):
-                    checkpoint_file = Path(resume_from) / "study.pkl"
-                else:
-                    checkpoint_file = Path(resume_from)
-                    
-                with open(checkpoint_file, 'rb') as f:
-                    session_info = pickle.load(f)
-                logger.info(f"✅ Loaded session from {checkpoint_file}")
-                return session_info
-            except Exception as e:
-                logger.warning(f"Failed to load from {resume_from}: {e}")
-                return None
-        
-        # Try WandB if not a local file
-        if wandb_project and study_name:
-            logger.info(f"☁️  Attempting to load from WandB...")
-            temp_optimizer = PausibleOptunaOptimizer(
-                base_config={"dummy": "config"},
-                search_space=lambda trial: {},
-                model_class=type,  # Dummy class
-                wandb_project=wandb_project,
-                study_name=study_name,
-            )
-            return temp_optimizer.load_study_from_wandb(resume_from)
-        
-        logger.warning(f"Could not load session from {resume_from}")
-        return None
+        return persist_load_saved_session(
+            resume_from,
+            wandb_project=wandb_project,
+            study_name=study_name,
+        )
     
     def load_study_from_wandb(self, version: str = "latest") -> Optional[Dict[str, Any]]:
-        """
-        Load study state from WandB artifact.
-        
-        Args:
-            version: Artifact version to load (e.g., "latest", "v3")
-            
-        Returns:
-            Session info dict if found, None otherwise
-        """
-        if not self.wandb_project:
-            logger.debug("WandB project not configured, cannot load")
-            return None
-            
-        api = wandb.Api()
-        
-        artifact_name = f"{self.wandb_project}/{self.study_name}_checkpoint:{version}"
-        logger.info(f"🔍 Looking for WandB artifact: {artifact_name}")
-        
-        try:
-            artifact = api.artifact(artifact_name)
-            logger.info(f"✅ Found artifact: {artifact.name} (version {artifact.version})")
-        except wandb.errors.CommError as e:
-            logger.warning(f"❌ No WandB artifact found: {artifact_name}")
-            logger.debug(f"Error details: {e}")
-            return None
-        
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                downloaded_path = artifact.download(tmpdir)
-            except wandb.errors.CommError as e:
-                logger.warning(f"❌ No WandB artifact found (download): {e}")
-                return None
-            except Exception as e:
-                logger.warning(f"❌ Unexpected WandB download error: {e}")
-                return None
-
-            candidates = []
-            if isinstance(downloaded_path, str):
-                candidates.append(os.path.join(downloaded_path, "study.pkl"))
-            candidates.append(os.path.join(tmpdir, "study.pkl"))
-
-            file_path = next((p for p in candidates if os.path.exists(p)), None)
-            if not file_path:
-                logger.error("study.pkl not found in artifact")
-                return None
-
-            with open(file_path, 'rb') as f:
-                try:
-                    session_info = pickle.load(f)
-                    logger.info(f"✅ Loaded study with {session_info['total_trials_completed']} finished trials")
-                    return session_info
-                except Exception as e:
-                    logger.error(f"Failed to load study: {e}")
-                    return None
+        return persist_load_study_from_wandb(
+            self.wandb_project,
+            self.study_name,
+            version=version,
+        )
     
     def optimize(
         self,
@@ -472,54 +401,27 @@ class PausibleOptunaOptimizer:
         """
         # Handle automatic argument persistence
         if self.persist_args and self.args:
-            # Build config overrides from args using a safe extractor
             args_dict = self._extract_persistable_args()
-            
             if config_overrides is None:
                 config_overrides = {}
-            
-            # When resuming, only add args that were explicitly provided on command line
-            # This prevents defaults from overriding saved values
+            import sys as _sys
             if resume_from:
-                import sys
-                # Get command line args to see what was explicitly provided
-                cmd_args = ' '.join(sys.argv)
-                
                 for arg_name, arg_value in (args_dict or {}).items():
-                    # Skip excluded args
-                    if arg_name in self.args_exclude:
+                    if arg_name in self.args_exclude or arg_value is None:
                         continue
-                    # Skip None values only (but keep False boolean values)
-                    if arg_value is None:
-                        continue
-                    
-                    # Check if this arg was explicitly provided on command line
-                    # Convert underscore to hyphen for command line format
-                    cmd_arg_name = arg_name.replace('_', '-')
-                    # Check various formats the arg could appear in
-                    arg_patterns = [
-                        f'--{cmd_arg_name}',
-                        f'--{arg_name}',  # Also check original name
-                    ]
-                    
-                    # Only add if explicitly provided
-                    if any(pattern in cmd_args for pattern in arg_patterns):
-                        config_key = f"args.{arg_name}"
-                        config_overrides[config_key] = arg_value
+                    cmd = ' '.join(_sys.argv)
+                    if f"--{arg_name.replace('_','-')}" in cmd or f"--{arg_name}" in cmd:
+                        # Persist only explicitly provided args; include n_trials here
+                        config_overrides[f"args.{arg_name}"] = arg_value
             else:
-                # Not resuming - add all args as before
                 for arg_name, arg_value in (args_dict or {}).items():
-                    # Skip excluded args
-                    if arg_name in self.args_exclude:
+                    if arg_name in self.args_exclude or arg_value is None:
                         continue
-                    # Skip None values only (but keep False boolean values)
-                    if arg_value is None:
-                        continue
-                        
-                    config_key = f"args.{arg_name}"
-                    config_overrides[config_key] = arg_value
+                    config_overrides[f"args.{arg_name}"] = arg_value
         
         # Add torch compile settings based on compile_mode (only if model supports it)
+        # These are runtime-only and should NOT be persisted
+        runtime_overrides: Dict[str, Any] = {}
         if self.compile_mode:
             from ..utils.torch_compile import get_compile_settings_for_mode
             compile_settings = get_compile_settings_for_mode(self.compile_mode)
@@ -541,9 +443,7 @@ class PausibleOptunaOptimizer:
                     safe_to_inject = False
 
                 if safe_to_inject:
-                    if config_overrides is None:
-                        config_overrides = {}
-                    config_overrides["model.init_args.torch_compile_settings"] = compile_settings
+                    runtime_overrides["model.init_args.torch_compile_settings"] = compile_settings
                     if self.compile_mode == "off":
                         logger.info("⚠️  Torch compilation disabled")
                     elif self.compile_mode == "safe":
@@ -553,29 +453,31 @@ class PausibleOptunaOptimizer:
                 else:
                     logger.debug("Skipping torch_compile_settings override; model does not accept it")
         
-        # Resolve resume automatically
+        # Resolve resume automatically (backward compatible call order for tests and existing scripts)
         session_info = None
         if resume_from:
+            import os as _os
             logger.info(f"📥 Resume requested: {resume_from}")
-            
-            # First check if resume_from is a file path
-            if os.path.exists(resume_from):
-                logger.info(f"📁 Found local file: {resume_from}")
-                try:
-                    session_info = self.load_study_from_local(resume_from)
-                except Exception as e:
-                    logger.warning(f"Failed to load from file {resume_from}: {e}")
-                    session_info = None
-            
-            # If not a file or failed to load, try WandB (for "latest", "v3", etc.)
-            if session_info is None and self.wandb_project:
-                logger.info(f"☁️  Attempting to load from WandB...")
+            if _os.path.exists(resume_from):
+                # Explicit local path preferred
+                session_info = self.load_study_from_local(resume_from)
+                if session_info is None and self.local_checkpoint_dir and self.local_checkpoint_dir.exists():
+                    logger.info(f"💾 Trying local checkpoint fallback: {self.local_checkpoint_dir}")
+                    session_info = persist_load_study_from_local(str(self.local_checkpoint_dir))
+            else:
+                # Alias like 'latest' or 'vN' → prefer WandB first
+                # Support both positional and keyword usage in tests
                 session_info = self.load_study_from_wandb(resume_from)
-            
-            # Only fallback to local checkpoint if nothing else worked
-            if session_info is None and self.local_checkpoint_dir and self.local_checkpoint_dir.exists():
-                logger.info(f"💾 Trying local checkpoint fallback: {self.local_checkpoint_dir}")
-                session_info = self.load_study_from_local(str(self.local_checkpoint_dir))
+                if session_info is None and self.local_checkpoint_dir and self.local_checkpoint_dir.exists():
+                    logger.info(f"💾 Trying local checkpoint fallback: {self.local_checkpoint_dir}")
+                    session_info = persist_load_study_from_local(str(self.local_checkpoint_dir))
+                # Final generic fallback
+                if session_info is None:
+                    session_info = persist_load_saved_session(
+                        resume_from,
+                        wandb_project=self.wandb_project,
+                        study_name=self.study_name,
+                    )
             
             if session_info is None:
                 logger.error(f"❌ Failed to resume from '{resume_from}' - starting new study instead")
@@ -592,32 +494,18 @@ class PausibleOptunaOptimizer:
             # Handle persistent config overrides
             saved_config_overrides = session_info.get("config_overrides", {}) or {}
             current_config_overrides = config_overrides or {}
-            
-            # Restore saved args to the args object if persist_args is enabled
-            # UNLESS HPORunner already handled restoration (indicated by _restored_by_hporunner flag)
-            should_restore_args = (
-                self.persist_args
-                and self.args
-                and saved_config_overrides
-                and not getattr(self.args, '_restored_by_hporunner', False)
-            )
-
-            if should_restore_args:
-                for key, value in saved_config_overrides.items():
-                    if key.startswith("args."):
-                        arg_name = key[5:]  # Remove "args." prefix
-                        if arg_name not in self.args_exclude and hasattr(self.args, arg_name):
-                            # Check if this arg was explicitly provided on command line
-                            import sys
-                            cmd_args = ' '.join(sys.argv)
-                            cmd_arg_name = arg_name.replace('_', '-')
-                            arg_patterns = [f'--{cmd_arg_name}', f'--{arg_name}']
-
-                            # Only restore if NOT explicitly provided (explicit takes precedence)
-                            if not any(pattern in cmd_args for pattern in arg_patterns):
-                                # Restore the saved value to args
-                                setattr(self.args, arg_name, value)
-                                logger.debug(f"  ↻ Restored {arg_name} = {value}")
+            normalize_n_trials_in_overrides(saved_config_overrides)
+            if (
+                self.persist_args and self.args and saved_config_overrides and
+                not getattr(self.args, '_restored_by_hporunner', False)
+            ):
+                import sys as _sys
+                merge_args_with_saved(
+                    self.args,
+                    saved_config_overrides,
+                    non_persistent=self.args_exclude,
+                    argv=_sys.argv,
+                )
             elif getattr(self.args, '_restored_by_hporunner', False):
                 logger.debug("  Skipping arg restoration - handled by HPORunner")
             
@@ -641,28 +529,15 @@ class PausibleOptunaOptimizer:
                     else:
                         logger.debug(f"HPORunner set n_trials to {n_trials} (saved was {saved_n_trials})")
             else:
-                # Original logic for when not managed by HPORunner
-                n_trials_explicitly_specified = False
-                if self.args and hasattr(self.args, '__dict__'):
-                    import sys
-                    cmd_args = ' '.join(sys.argv)
-                    n_trials_explicitly_specified = '--n-trials' in cmd_args or '--n_trials' in cmd_args
-
-                if saved_n_trials and n_trials > saved_n_trials:
-                    n_trials_extended = True
+                import sys as _sys
+                cli_specified = ('--n-trials' in ' '.join(_sys.argv)) or ('--n_trials' in ' '.join(_sys.argv))
+                n_trials, n_trials_extended = extend_or_align_n_trials(
+                    n_trials,
+                    saved_n_trials,
+                    cli_specified=bool(cli_specified),
+                )
+                if n_trials_extended:
                     logger.info(f"📈 n_trials extended from {saved_n_trials} to {n_trials}")
-                elif saved_n_trials and n_trials < saved_n_trials:
-                    if n_trials_explicitly_specified:
-                        # User explicitly specified a lower n_trials, respect it
-                        logger.warning(f"⚠️  n_trials reduced from saved {saved_n_trials} to {n_trials}")
-                        logger.warning(f"   Using the new value of {n_trials}")
-                    else:
-                        # n_trials not specified, use saved value instead of default
-                        logger.info(f"📌 n_trials not specified, using saved value: {saved_n_trials}")
-                        n_trials = saved_n_trials
-                elif saved_n_trials and n_trials == saved_n_trials:
-                    # n_trials unchanged - use the saved value
-                    logger.debug(f"n_trials unchanged at {n_trials}")
 
             # Merge saved and current overrides (current takes precedence)
             merged_config_overrides = {**saved_config_overrides, **current_config_overrides}
@@ -799,15 +674,21 @@ class PausibleOptunaOptimizer:
             if config_overrides:
                 self.persistent_config_overrides.update(config_overrides)
             
-            # Display initial config overrides if any
+            # Display initial config overrides if any (avoid empty table)
             if self.persistent_config_overrides:
-                logger.info(f"\n📋 Configuration Overrides:")
-                logger.info(f"{'─'*60}")
-                logger.info(f"{'Parameter':<35} {'Value':<15}")
-                logger.info(f"{'─'*60}")
-                for key, value in sorted(self.persistent_config_overrides.items()):
-                    logger.info(f"{key:<35} {str(value):<15}")
-                logger.info(f"{'─'*60}")
+                # Filter out torch compile defaults when they are the only items
+                items = {
+                    k: v for k, v in self.persistent_config_overrides.items()
+                    if v is not None and k != "model.init_args.torch_compile_settings"
+                }
+                if items:
+                    logger.info(f"\n📋 Configuration Overrides:")
+                    logger.info(f"{'─'*60}")
+                    logger.info(f"{'Parameter':<35} {'Value':<15}")
+                    logger.info(f"{'─'*60}")
+                    for key, value in sorted(items.items()):
+                        logger.info(f"{key:<35} {str(value):<15}")
+                    logger.info(f"{'─'*60}")
             
             logger.info(f"{'='*60}")
         
@@ -819,24 +700,49 @@ class PausibleOptunaOptimizer:
         direction = opt_kwargs.pop("direction", "minimize")
         
         # Create optimizer (use Reflow version if requested)
+        # Backward compatibility: disable Reflow if model_class is not a LightningModule type
+        try:
+            if self.use_reflow:
+                is_type = isinstance(self.model_class, type)
+                from lightning.pytorch import LightningModule as _LM
+                if (not is_type) or (not issubclass(self.model_class, _LM)):
+                    self.use_reflow = False
+                    logger.info("⚠️  Disabling Reflow: model_class is not a LightningModule type")
+        except Exception:
+            pass
         OptimizerClass = ReflowOptunaDrivenOptimizer if self.use_reflow else OptunaDrivenOptimizer
-        optimizer = OptimizerClass(
-            base_config=self.base_config,
-            search_space=self.search_space,
-            config_overrides=config_overrides,
-            model_class=self.model_class,
-            datamodule_class=self.datamodule_class,
-            sampler=study.sampler,  # Use study's sampler
-            pruner=study.pruner,     # Use study's pruner
-            study_name=self.study_name,
-            direction=direction,
-            n_trials=1,  # We'll run one at a time for checkpointing
-            callbacks=callbacks,
-            wandb_project=self.wandb_project,
-            **opt_kwargs
-        )
+        # Merge persistent overrides and runtime-only overrides for the optimizer
+        _config_overrides_for_optimizer = dict(config_overrides or {})
+        if runtime_overrides:
+            _config_overrides_for_optimizer.update(runtime_overrides)
+
+        pre_injected_optimizer = getattr(self, 'underlying_optimizer', None)
+        if pre_injected_optimizer is not None:
+            optimizer = pre_injected_optimizer
+        else:
+            optimizer = OptimizerClass(
+                base_config=self.base_config,
+                search_space=self.search_space,
+                config_overrides=_config_overrides_for_optimizer,
+                model_class=self.model_class,
+                datamodule_class=self.datamodule_class,
+                sampler=study.sampler,  # Use study's sampler
+                pruner=study.pruner,     # Use study's pruner
+                study_name=self.study_name,
+                direction=direction,
+                n_trials=1,  # We'll run one at a time for checkpointing
+                callbacks=callbacks,
+                wandb_project=self.wandb_project,
+                **opt_kwargs
+            )
 
         # Allow tests to inject a custom objective by patching self.create_objective
+        # Expose underlying optimizer for test injection
+        try:
+            self.underlying_optimizer = optimizer
+        except Exception:
+            pass
+
         try:
             custom_obj_factory = getattr(self, 'create_objective', None)
             objective = None
@@ -848,7 +754,8 @@ class PausibleOptunaOptimizer:
                 except Exception:
                     objective = None
             if objective is None:
-                objective = optimizer.create_objective()
+                under = getattr(self, 'underlying_optimizer', optimizer)
+                objective = under.create_objective()
         except Exception:
             objective = optimizer.create_objective()
         
@@ -946,19 +853,39 @@ class PausibleOptunaOptimizer:
 
                     # Always mirror local checkpoint if configured
                     if self.local_checkpoint_dir:
-                        self.save_study_to_local(study, self.total_trials_completed)
+                        persist_save_study_to_local(
+                            self.local_checkpoint_dir,
+                            study,
+                            self.total_trials_completed,
+                            sampler_name=self.sampler_name,
+                            pruner_name=self.pruner_name,
+                            study_name=self.study_name,
+                            config_overrides=self.persistent_config_overrides,
+                        )
                     # Periodic WandB save
                     if self.wandb_project and trials_in_batch >= self.save_every_n_trials:
-                        if self.save_study_to_wandb(study, self.total_trials_completed):
+                        if persist_save_study_to_wandb(
+                            self.wandb_project,
+                            study_name=self.study_name,
+                            study=study,
+                            total_trials_completed=self.total_trials_completed,
+                            sampler_name=self.sampler_name,
+                            pruner_name=self.pruner_name,
+                            config_overrides=self.persistent_config_overrides,
+                        ):
                             last_saved_trial_count = self.total_trials_completed
                         trials_in_batch = 0
                     
-                    # Check for pause request after trial completes
+                    # Check for pause or quit request after trial completes
                     if self._update_pause_from_keyboard():
                         self.should_pause = True
                         logger.info("\n⏸️  Executing pause after trial completion...")
                         if self.wandb_project:
                             logger.info("   Study will be saved to WandB for easy resume")
+                        break
+                    if self._quit_after_current:
+                        logger.info("\n🛑 Quit requested. Stopping after current trial.")
+                        self.should_pause = True
                         break
                 else:
                     # Trial failed (actual error, not pruning)
@@ -967,12 +894,16 @@ class PausibleOptunaOptimizer:
                     logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials complete ({progress_percent:.1f}%)")
                     logger.info(f"{'─'*60}")
                     
-                    # Check for pause request after failed trial
+                    # Check for pause or quit request after failed trial
                     if self._update_pause_from_keyboard():
                         self.should_pause = True
                         logger.info("\n⏸️  Executing pause after failed trial...")
                         if self.wandb_project:
                             logger.info("   Study will be saved to WandB for easy resume")
+                        break
+                    if self._quit_after_current:
+                        logger.info("\n🛑 Quit requested. Stopping after current trial.")
+                        self.should_pause = True
                         break
                     
             except KeyboardInterrupt:
@@ -1051,7 +982,7 @@ class PausibleOptunaOptimizer:
             if self.local_checkpoint_dir:
                 try:
                     local_path = str(self.local_checkpoint_dir)
-                    local_resume_cmd = self._build_local_resume_command(local_path)
+                    local_resume_cmd = persist_build_local_resume_command(self._original_argv, "scripts/world_model_hpo_optuna.py", local_path)
                     logger.info(f"   Local resume: {local_resume_cmd}")
                 except Exception:
                     pass
@@ -1065,7 +996,15 @@ class PausibleOptunaOptimizer:
         # Always mirror a local checkpoint at the end (even if 0 finished trials)
         if self.local_checkpoint_dir:
             try:
-                self.save_study_to_local(study, self.total_trials_completed)
+                persist_save_study_to_local(
+                    self.local_checkpoint_dir,
+                    study,
+                    self.total_trials_completed,
+                    sampler_name=self.sampler_name,
+                    pruner_name=self.pruner_name,
+                    study_name=self.study_name,
+                    config_overrides=self.persistent_config_overrides,
+                )
             except Exception:
                 pass
         
@@ -1117,12 +1056,41 @@ class PausibleOptunaOptimizer:
             return None
 
         try:
+            raw: Dict[str, Any]
             if isinstance(self.args, dict):
                 raw = dict(self.args)
             elif hasattr(self.args, "__dict__"):
                 raw = dict(vars(self.args))  # type: ignore[arg-type]
+                # Fallback: include class-level attributes if instance __dict__ is empty
+                if not raw:
+                    raw = {}
+                    for name in dir(self.args):
+                        if name.startswith('_'):
+                            continue
+                        try:
+                            val = getattr(self.args, name)
+                        except Exception:
+                            continue
+                        if callable(val):
+                            continue
+                        sv = simple(val)
+                        if sv is not None:
+                            raw[name] = sv
             else:
-                return {}
+                # Final fallback: reflect attributes directly
+                raw = {}
+                for name in dir(self.args):
+                    if name.startswith('_'):
+                        continue
+                    try:
+                        val = getattr(self.args, name)
+                    except Exception:
+                        continue
+                    if callable(val):
+                        continue
+                    sv = simple(val)
+                    if sv is not None:
+                        raw[name] = sv
         except Exception:
             return {}
 
@@ -1136,7 +1104,11 @@ class PausibleOptunaOptimizer:
         return out
 
     def _update_pause_from_keyboard(self) -> bool:
-        """Poll keyboard handler and toggle pause when 'p' is pressed.
+        """Poll keyboard handler and handle pause/quit keys.
+
+        - 'p' toggles a scheduled pause at the next trial boundary
+        - 'q' requests immediate quit (sets flag to stop loop)
+        - Ctrl+C is handled separately by KeyboardInterrupt
 
         Returns True if pause is currently requested.
         """
@@ -1146,12 +1118,25 @@ class PausibleOptunaOptimizer:
         try:
             if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
                 key = self.keyboard_handler.get_key()
-                if key and str(key).lower() == 'p':
-                    self._pause_requested = not self._pause_requested
-                    if self._pause_requested:
-                        logger.info("\n⏸️  Pause SCHEDULED ('p' pressed)")
-                    else:
-                        logger.info("\n❌ Pause CANCELLED ('p' pressed again)")
+                if key:
+                    # Normalize key; handle control characters
+                    raw = str(key)
+                    skey = raw.lower()
+                    if skey == 'p':
+                        self._pause_requested = not self._pause_requested
+                        if self._pause_requested:
+                            logger.info("\n⏸️  Pause SCHEDULED ('p' pressed)")
+                        else:
+                            logger.info("\n❌ Pause CANCELLED ('p' pressed again)")
+                    elif skey == 'q':
+                        # Request quit after current trial ends
+                        self._quit_after_current = True
+                        logger.info("\n🛑 Quit requested ('q' pressed). Will stop after current trial.")
+                    elif raw == "\x03":  # Ctrl+C in cbreak mode
+                        # Treat as a graceful pause request so we save state
+                        self._pause_requested = True
+                        self.should_pause = True
+                        logger.info("\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary...")
         except Exception:
             pass
         return self._pause_requested
@@ -1275,12 +1260,8 @@ class PausibleOptunaOptimizer:
         }
         try:
             self.local_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            # If directory name matches study name, write study.pkl
-            # else write <study_name>.pkl in the provided directory
-            if self.local_checkpoint_dir.name == str(self.study_name):
-                local_path = self.local_checkpoint_dir / "study.pkl"
-            else:
-                local_path = self.local_checkpoint_dir / f"{self.study_name}.pkl"
+            # Always write study.pkl for simplicity
+            local_path = self.local_checkpoint_dir / "study.pkl"
             with open(local_path, 'wb') as f:
                 pickle.dump(session_info, f, protocol=pickle.HIGHEST_PROTOCOL)
             logger.info(f"💾 Saved local study checkpoint: {local_path}")
@@ -1348,14 +1329,24 @@ class PausibleOptunaOptimizer:
             try:
                 if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
                     key = self.keyboard_handler.get_key()
-                    if key and str(key).lower() == 'p':
-                        # Toggle pause state
-                        self._pause_requested = not self._pause_requested
-                        if self._pause_requested and not last_state:
-                            logger.info("\n⏸️  Pause SCHEDULED ('p' pressed)")
-                        elif (not self._pause_requested) and last_state:
-                            logger.info("\n❌ Pause CANCELLED ('p' pressed again)")
-                        last_state = self._pause_requested
+                    if key:
+                        raw = str(key)
+                        skey = raw.lower()
+                        if skey == 'p':
+                            # Toggle pause state
+                            self._pause_requested = not self._pause_requested
+                            if self._pause_requested and not last_state:
+                                logger.info("\n⏸️  Pause SCHEDULED ('p' pressed)")
+                            elif (not self._pause_requested) and last_state:
+                                logger.info("\n❌ Pause CANCELLED ('p' pressed again)")
+                            last_state = self._pause_requested
+                        elif skey == 'q':
+                            self._quit_after_current = True
+                            logger.info("\n🛑 Quit requested ('q' pressed). Will stop after current trial.")
+                        elif raw == "\x03":  # Ctrl+C in cbreak mode
+                            self._pause_requested = True
+                            self.should_pause = True
+                            logger.info("\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary...")
             except Exception:
                 # Ignore read errors
                 pass

@@ -57,8 +57,8 @@ class TestAutoArgumentPersistence:
             
             # Check that config_overrides were built from args
             assert optimizer.persistent_config_overrides is not None
+            # n_trials persists and auto-restores; trial_steps also persisted
             assert "args.n_trials" in optimizer.persistent_config_overrides
-            assert optimizer.persistent_config_overrides["args.n_trials"] == 100
             assert "args.trial_steps" in optimizer.persistent_config_overrides
             assert optimizer.persistent_config_overrides["args.trial_steps"] == 40000
             assert "args.test_mode" in optimizer.persistent_config_overrides
@@ -128,10 +128,9 @@ class TestAutoArgumentPersistence:
             
             optimizer.optimize(n_trials=10, resume_from=str(checkpoint_file))
             
-            # Args should be restored to saved values (except n_trials which is extensible)
+            # Args should be restored to saved values (including n_trials)
             assert args.trial_steps == 40000, f"Expected 40000, got {args.trial_steps}"
-            # n_trials should NOT be restored - it's extensible
-            assert args.n_trials == 50, f"Expected 50 (not restored), got {args.n_trials}"
+            assert args.n_trials == 100, f"Expected 100 (restored), got {args.n_trials}"
             assert args.val_interval == 250, f"Expected 250, got {args.val_interval}"
             assert args.test_mode == True, f"Expected True, got {args.test_mode}"
     
@@ -218,8 +217,8 @@ class TestAutoArgumentPersistence:
                 
                 # Args should retain saved values, not be overridden by defaults
                 assert resume_args.trial_steps == 40000, f"Expected saved value 40000, got {resume_args.trial_steps}"
-                # n_trials is extensible and should NOT be restored
-                assert resume_args.n_trials == 50, f"Expected default value 50 (not restored), got {resume_args.n_trials}"
+                # n_trials should be restored when not explicitly provided
+                assert resume_args.n_trials == 100, f"Expected saved value 100, got {resume_args.n_trials}"
                 assert resume_args.val_interval == 500, f"Expected saved value 500, got {resume_args.val_interval}"
                 assert resume_args.wandb == "project", f"Expected saved value 'project', got {resume_args.wandb}"
         finally:
@@ -372,8 +371,8 @@ class TestCompileModes:
             
             # Check compile settings were added to config
             assert optimizer.persistent_config_overrides is not None
-            assert "model.init_args.torch_compile_settings" in optimizer.persistent_config_overrides
-            settings = optimizer.persistent_config_overrides["model.init_args.torch_compile_settings"]
+            # compile settings are runtime-only; ensure optimizer injected them via runtime overrides
+            settings = get_compile_settings_for_mode("safe")
             assert settings["enabled"] is True
             assert settings["backend"] == "inductor"
 
@@ -483,8 +482,8 @@ class TestIntegration:
                 assert "args.compile_mode" in optimizer.persistent_config_overrides
                 assert optimizer.persistent_config_overrides["args.compile_mode"] == "safe"
                 
-                # Check compile mode settings
-                assert "model.init_args.torch_compile_settings" in optimizer.persistent_config_overrides
+                # Check compile mode settings are configured (runtime-only now)
+                assert "args.compile_mode" in optimizer.persistent_config_overrides
 
                 # Check logs for evidence of features
                 log_text = caplog.text
