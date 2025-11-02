@@ -360,7 +360,7 @@ class HPORunner:
                 self.config_overrides["trainer.val_check_interval"] = 1000
             # Trial steps (optional override for limiting per-trial work)
             if getattr(self.args, 'trial_steps', None) is not None:
-                self.config_overrides["trial_steps"] = self.args.trial_steps
+                self.config_overrides["trainer.max_steps"] = self.args.trial_steps
             # Extra limits for tests (speed up integration tests) via config override
             # Prefer config-driven approach instead of code-side trainer mutations.
             import os as _os
