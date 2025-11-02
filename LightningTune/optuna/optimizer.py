@@ -239,12 +239,20 @@ class OptunaDrivenOptimizer:
             # Extract and preserve callbacks from config (except problematic ones)
             config_callbacks = trainer_config.pop('callbacks', None)
             if config_callbacks:
-                # Instantiate callbacks from config if they're still in config format
-                from ..utils.config import instantiate_from_config
+                # Helper to instantiate from class_path + init_args config
+                def instantiate_callback(cb_config):
+                    import importlib
+                    class_path = cb_config['class_path']
+                    module_path, class_name = class_path.rsplit('.', 1)
+                    module = importlib.import_module(module_path)
+                    cls = getattr(module, class_name)
+                    init_args = cb_config.get('init_args', {})
+                    return cls(**init_args)
+
                 for cb_config in config_callbacks:
                     if isinstance(cb_config, dict) and 'class_path' in cb_config:
                         try:
-                            cb = instantiate_from_config(cb_config)
+                            cb = instantiate_callback(cb_config)
                             # Filter out callbacks that conflict with HPO
                             from lightning.pytorch.callbacks import ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar
                             if not isinstance(cb, (ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar)):
