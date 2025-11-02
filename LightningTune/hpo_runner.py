@@ -358,9 +358,9 @@ class HPORunner:
                 self.config_overrides["trainer.val_check_interval"] = self.args.val_interval
             else:
                 self.config_overrides["trainer.val_check_interval"] = 1000
-            # Trial steps (optional override for limiting per-trial work)
-            if getattr(self.args, 'trial_steps', None) is not None:
-                self.config_overrides["trainer.max_steps"] = self.args.trial_steps
+            # Trial steps (early stopping without affecting LR schedule)
+            # DO NOT set trainer.max_steps here - that would break the LR schedule!
+            # Instead, we'll add EarlyStoppingSteps callback below.
             # Extra limits for tests (speed up integration tests) via config override
             # Prefer config-driven approach instead of code-side trainer mutations.
             import os as _os
@@ -418,6 +418,18 @@ class HPORunner:
         # Mark that args have been pre-restored by HPORunner
         if hasattr(self.args, '__dict__'):
             self.args._restored_by_hporunner = True
+
+        # Add EarlyStoppingSteps callback if trial_steps is specified
+        # This stops trials early WITHOUT affecting the LR schedule (preserves trainer.max_steps)
+        if getattr(self.args, 'trial_steps', None) is not None:
+            from LightningTune.callbacks import EarlyStoppingSteps
+            early_stop_callback = EarlyStoppingSteps(
+                stopping_steps=self.args.trial_steps,
+                verbose=True
+            )
+            self.callbacks.append(early_stop_callback)
+            logger.info(f"📍 Added EarlyStoppingSteps callback: will stop trials at {self.args.trial_steps} steps")
+            logger.info(f"   (Preserves LR schedule by not modifying trainer.max_steps)")
 
         # Determine an absolute local checkpoint directory so local resume paths are reliable
         # Use current working directory as the anchor to avoid module-relative saves
