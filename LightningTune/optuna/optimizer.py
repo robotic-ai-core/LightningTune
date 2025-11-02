@@ -236,9 +236,25 @@ class OptunaDrivenOptimizer:
                 # Ensure checkpointing is enabled if we're adding a checkpoint callback
                 trainer_config['enable_checkpointing'] = True
             
-            # Remove any conflicting parameters
-            trainer_config.pop('callbacks', None)
-            
+            # Extract and preserve callbacks from config (except problematic ones)
+            config_callbacks = trainer_config.pop('callbacks', None)
+            if config_callbacks:
+                # Instantiate callbacks from config if they're still in config format
+                from ..utils.config import instantiate_from_config
+                for cb_config in config_callbacks:
+                    if isinstance(cb_config, dict) and 'class_path' in cb_config:
+                        try:
+                            cb = instantiate_from_config(cb_config)
+                            # Filter out callbacks that conflict with HPO
+                            from lightning.pytorch.callbacks import ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar
+                            if not isinstance(cb, (ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar)):
+                                callbacks.append(cb)
+                        except Exception as e:
+                            logger.warning(f"Failed to instantiate callback from config: {e}")
+                    elif not isinstance(cb_config, dict):
+                        # Already instantiated callback
+                        callbacks.append(cb_config)
+
             # Remove any existing logger config first
             trainer_config.pop('logger', None)
             

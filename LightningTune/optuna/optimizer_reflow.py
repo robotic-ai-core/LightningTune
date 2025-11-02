@@ -263,7 +263,30 @@ class ReflowOptunaDrivenOptimizer:
             
             # Configure trainer settings (must come BEFORE any use of trainer_config)
             trainer_config = config.get('trainer', {})
-            trainer_config.pop('callbacks', None)  # Remove any existing callbacks config
+
+            # Extract and preserve callbacks from config (except problematic ones)
+            config_callbacks = trainer_config.pop('callbacks', None)
+            if config_callbacks:
+                # Instantiate callbacks from config if they're still in config format
+                from lightning_reflow.utils.config import instantiate_from_config
+                for cb_config in config_callbacks:
+                    if isinstance(cb_config, dict) and 'class_path' in cb_config:
+                        try:
+                            cb = instantiate_from_config(cb_config)
+                            # Filter out callbacks that conflict with HPO
+                            # Keep: Visualizer, custom callbacks
+                            # Skip: ModelCheckpoint (we add our own), ProgressBar, etc.
+                            from lightning.pytorch.callbacks import ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar
+                            if not isinstance(cb, (ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar)):
+                                callbacks.append(cb)
+                        except Exception as e:
+                            # Log but don't fail if callback instantiation fails
+                            import logging
+                            logging.getLogger(__name__).warning(f"Failed to instantiate callback from config: {e}")
+                    elif not isinstance(cb_config, dict):
+                        # Already instantiated callback
+                        callbacks.append(cb_config)
+
             trainer_config.pop('logger', None)  # Will be set by Reflow or below
 
             # Do not mutate max_steps here; prefer config-driven control
