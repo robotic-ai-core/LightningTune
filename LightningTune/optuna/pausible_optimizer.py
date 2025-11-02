@@ -103,6 +103,7 @@ class PausibleOptunaOptimizer:
         args_exclude: Optional[Set[str]] = None,
         simplify_param_names: bool = True,
         compile_mode: Optional[str] = None,  # None means default SAFE without persisting
+        test_mode: bool = False,  # Enable test keyboard handler for automated testing
         **optimizer_kwargs
     ):
         """
@@ -160,6 +161,7 @@ class PausibleOptunaOptimizer:
         self.save_every_n_trials = save_every_n_trials
         self.enable_pause = enable_pause
         self.use_reflow = use_reflow
+        self.test_mode = test_mode
         
         # New enhanced features
         self.persist_args = persist_args
@@ -205,15 +207,18 @@ class PausibleOptunaOptimizer:
         self.total_trials_completed = 0
         self.should_pause = False
         self._quit_after_current = False
-        
+
         # Setup keyboard handler for 'p' key pause (robust terminal handling)
         self.keyboard_handler = None
         # Backward-compatibility shim for tests (deprecated, will be removed)
         self.keyboard_monitor = None
         self._pause_requested: bool = False
+        # Initialize polling thread attributes
+        self._pause_poll_thread = None
+        self._polling_active = False
         if enable_pause and os.environ.get("LT_CHILD", "0") != "1":
             if create_improved_keyboard_handler is not None:
-                self.keyboard_handler = create_improved_keyboard_handler()
+                self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
             else:
                 self.keyboard_handler = None
     
@@ -762,9 +767,22 @@ class PausibleOptunaOptimizer:
         # Start keyboard monitoring if available
         if self.keyboard_handler and hasattr(self.keyboard_handler, 'start_monitoring'):
             try:
-                self.keyboard_handler.start_monitoring()
-            except Exception:
-                logger.info("ℹ️  Keyboard monitoring unavailable, pause functionality disabled")
+                # Check if it's actually available before starting
+                if hasattr(self.keyboard_handler, 'is_available'):
+                    if not self.keyboard_handler.is_available():
+                        logger.warning("⚠️  Keyboard monitoring unavailable (no TTY)")
+                        logger.warning("⚠️  stdin.isatty() returned False - are you running in a pipe/redirect?")
+                        logger.warning("⚠️  Pause functionality will be disabled")
+                        self.keyboard_handler = None
+                    else:
+                        self.keyboard_handler.start_monitoring()
+                        logger.info("⌨️  Keyboard monitoring active - press 'p' to pause between trials")
+                        logger.info("   Pause events will be logged to /tmp/hpo_pause.log")
+                else:
+                    self.keyboard_handler.start_monitoring()
+            except Exception as e:
+                logger.warning(f"⚠️  Keyboard monitoring failed to start: {e}")
+                logger.warning("⚠️  Pause functionality disabled")
                 self.keyboard_handler = None
         # Start background polling for immediate schedule/cancel feedback
         self._pause_poll_thread = None
@@ -785,7 +803,16 @@ class PausibleOptunaOptimizer:
             # Check for keyboard pause request before starting trial
             if self._update_pause_from_keyboard():
                 self.should_pause = True
-                logger.info("\n⏸️  Executing pause at trial boundary...")
+                msg = "\n⏸️  Executing pause at trial boundary..."
+                print(msg)  # Print directly so it shows up even with progress bar
+                logger.info(msg)
+                # Log to file for visibility
+                try:
+                    with open("/tmp/hpo_pause.log", "a") as f:
+                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
+                        f.flush()
+                except:
+                    pass
                 if self.wandb_project:
                     logger.info("   Study will be saved to WandB for easy resume")
                 break
@@ -1336,17 +1363,38 @@ class PausibleOptunaOptimizer:
                             # Toggle pause state
                             self._pause_requested = not self._pause_requested
                             if self._pause_requested and not last_state:
-                                logger.info("\n⏸️  Pause SCHEDULED ('p' pressed)")
+                                msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
+                                print(msg)  # Print directly so it shows up even with progress bar
+                                logger.info(msg)
+                                # Also log to file for visibility (progress bar may hide terminal output)
+                                try:
+                                    with open("/tmp/hpo_pause.log", "a") as f:
+                                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
+                                        f.flush()
+                                except:
+                                    pass
                             elif (not self._pause_requested) and last_state:
-                                logger.info("\n❌ Pause CANCELLED ('p' pressed again)")
+                                msg = "\n❌ Pause CANCELLED ('p' pressed again)"
+                                print(msg)  # Print directly so it shows up even with progress bar
+                                logger.info(msg)
+                                try:
+                                    with open("/tmp/hpo_pause.log", "a") as f:
+                                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
+                                        f.flush()
+                                except:
+                                    pass
                             last_state = self._pause_requested
                         elif skey == 'q':
                             self._quit_after_current = True
-                            logger.info("\n🛑 Quit requested ('q' pressed). Will stop after current trial.")
+                            msg = "\n🛑 Quit requested ('q' pressed). Will stop after current trial."
+                            print(msg)  # Print directly so it shows up even with progress bar
+                            logger.info(msg)
                         elif raw == "\x03":  # Ctrl+C in cbreak mode
                             self._pause_requested = True
                             self.should_pause = True
-                            logger.info("\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary...")
+                            msg = "\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary..."
+                            print(msg)  # Print directly so it shows up even with progress bar
+                            logger.info(msg)
             except Exception:
                 # Ignore read errors
                 pass
