@@ -305,6 +305,9 @@ class ReflowOptunaDrivenOptimizer:
             if 'devices' not in trainer_config:
                 trainer_config['devices'] = 'auto'
 
+            # Force disable progress bar for HPO (conflicts with trial progress)
+            trainer_config['enable_progress_bar'] = False
+
             # Add checkpoint callback if requested and ensure checkpointing is enabled
             if self.save_checkpoints:
                 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -381,9 +384,30 @@ class ReflowOptunaDrivenOptimizer:
                             'compile': config.get('compile', {})
                         },
                         auto_configure_logging=False,  # We handle logging ourselves
-                        disable_pause_callback=True  # Use Lightning's progress bar for HPO
+                        disable_pause_callback=True  # HPO manages pause at trial boundaries
                     )
-                    
+
+                    # CRITICAL: Force disable progress bar after Reflow init
+                    # Reflow sets enable_progress_bar=True when disable_pause_callback=True
+                    # We must override this AFTER Reflow creates its internal config
+                    if hasattr(reflow, 'trainer_defaults'):
+                        reflow.trainer_defaults['enable_progress_bar'] = False
+
+                    # CRITICAL: Remove PauseCallback/FlowProgressBarCallback from callbacks
+                    # Even with disable_pause_callback=True, the callback might still be added
+                    try:
+                        from lightning_reflow.callbacks.pause import PauseCallback, FlowProgressBarCallback
+                        if hasattr(reflow, 'callbacks') and reflow.callbacks:
+                            original_count = len(reflow.callbacks)
+                            reflow.callbacks = [
+                                cb for cb in reflow.callbacks
+                                if not isinstance(cb, (PauseCallback, FlowProgressBarCallback))
+                            ]
+                            if len(reflow.callbacks) < original_count:
+                                logger.info(f"🚫 Removed {original_count - len(reflow.callbacks)} progress bar callback(s) for HPO")
+                    except ImportError:
+                        pass  # Callbacks not available
+
                     # Run training
                     result = reflow.fit()
                     
@@ -486,6 +510,9 @@ class ReflowOptunaDrivenOptimizer:
                     trainer_config['enable_checkpointing'] = True
         except Exception:
             pass
+
+        # Force disable progress bar for HPO (conflicts with trial progress)
+        trainer_config['enable_progress_bar'] = False
 
         trainer = Trainer(
             callbacks=callbacks,

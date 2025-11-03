@@ -17,10 +17,17 @@ from lightning import LightningModule
 from lightning.pytorch.callbacks import Callback
 
 from .optuna.pausible_optimizer import PausibleOptunaOptimizer
-from .persistence import build_local_resume_command as persist_build_local_resume_command
 from .utils import load_yaml_config, deep_merge_configs
 
 logger = logging.getLogger(__name__)
+
+# Import PauseCallback - graceful fallback if LightningReflow not available
+try:
+    from lightning_reflow.callbacks.pause.pause_callback import PauseCallback
+    HAS_PAUSE_CALLBACK = True
+except ImportError:
+    HAS_PAUSE_CALLBACK = False
+    logger.debug("LightningReflow not available, pause functionality will be limited")
 
 
 class HPORunner:
@@ -45,6 +52,7 @@ class HPORunner:
 
     # Default CLI arguments for all HPO experiments
     DEFAULT_CLI_ARGS = {
+        'config': {'type': str, 'default': None, 'help': 'Path to base configuration file (YAML)'},
         'n_trials': {'type': int, 'default': 50, 'help': 'Number of trials to run'},
         'sampler': {'type': str, 'default': 'tpe', 'choices': ['tpe', 'random', 'cmaes', 'botorch']},
         'pruner': {'type': str, 'default': 'hyperband', 'choices': ['median', 'hyperband', 'successivehalving', 'none']},
@@ -59,10 +67,13 @@ class HPORunner:
         'use_reflow': {'type': bool, 'default': True, 'action': 'store_true'},
         'no_reflow': {'type': bool, 'default': False, 'action': 'store_true'},
         'test_mode': {'type': bool, 'default': False, 'action': 'store_true'},
+        'enable_pause': {'type': bool, 'default': None, 'action': 'store_true', 'help': 'Enable interactive pause (press p to pause)'},
+        'disable_pause': {'type': bool, 'default': False, 'action': 'store_true', 'help': 'Disable interactive pause'},
+        'pause_key': {'type': str, 'default': None, 'help': 'Key to trigger pause (default: p)'},
     }
 
     # Arguments that should not be persisted
-    NON_PERSISTENT_ARGS = {'resume_from', 'study_name'}
+    NON_PERSISTENT_ARGS = {'resume_from', 'study_name', 'n_trials'}
 
     def __init__(
         self,
@@ -74,6 +85,8 @@ class HPORunner:
         additional_cli_args: Optional[Dict[str, Dict]] = None,
         callbacks: Optional[List[Callback]] = None,
         default_study_name: Optional[str] = None,
+        enable_pause: bool = True,
+        pause_key: str = 'p',
     ):
         """
         Initialize HPO runner.
@@ -87,6 +100,8 @@ class HPORunner:
             additional_cli_args: Additional CLI arguments specific to this experiment
             callbacks: Lightning callbacks to use
             default_study_name: Default study name if not specified via CLI
+            enable_pause: Enable interactive pause functionality (press 'p' to pause)
+            pause_key: Key to trigger pause (default 'p')
         """
         self.model_class = model_class
         self.datamodule_class = datamodule_class
@@ -95,6 +110,8 @@ class HPORunner:
         self.override_config = override_config
         self.callbacks = callbacks or []
         self.default_study_name = default_study_name
+        self.enable_pause = enable_pause
+        self.pause_key = pause_key
 
         # Merge additional CLI args with defaults
         self.cli_args = self.DEFAULT_CLI_ARGS.copy()
@@ -148,6 +165,78 @@ class HPORunner:
         # Use provided argv or fall back to sys.argv
         cmd_args = ' '.join(argv if argv is not None else sys.argv)
         return any(pattern in cmd_args for pattern in arg_patterns)
+
+    def _parse_dot_notation_args(self, unknown_args: List[str]) -> Dict[str, Any]:
+        """
+        Parse Lightning CLI-style dot-notation arguments from unknown args.
+
+        Supports arguments like:
+            --data.batch_size 512
+            --model.learning_rate 1e-4
+            --trainer.max_epochs 100
+
+        Args:
+            unknown_args: List of unknown arguments from argparse
+
+        Returns:
+            Dictionary of config overrides with dot-notation keys
+        """
+        config_overrides = {}
+        i = 0
+
+        while i < len(unknown_args):
+            arg = unknown_args[i]
+
+            # Check if this looks like a config argument (starts with -- and contains .)
+            if arg.startswith('--') and '.' in arg:
+                key = arg[2:]  # Remove --
+
+                # Get the value (next argument)
+                if i + 1 < len(unknown_args) and not unknown_args[i + 1].startswith('--'):
+                    value_str = unknown_args[i + 1]
+
+                    # Auto-detect type
+                    value = self._auto_convert_type(value_str)
+
+                    config_overrides[key] = value
+                    i += 2  # Skip both arg and value
+                else:
+                    # Flag without value (treat as True)
+                    config_overrides[key] = True
+                    i += 1
+            else:
+                i += 1
+
+        return config_overrides
+
+    def _auto_convert_type(self, value_str: str) -> Any:
+        """
+        Automatically convert string value to appropriate Python type.
+
+        Args:
+            value_str: String value from command line
+
+        Returns:
+            Converted value (int, float, bool, or str)
+        """
+        # Try boolean
+        if value_str.lower() in ('true', 'false'):
+            return value_str.lower() == 'true'
+
+        # Try int
+        try:
+            return int(value_str)
+        except ValueError:
+            pass
+
+        # Try float
+        try:
+            return float(value_str)
+        except ValueError:
+            pass
+
+        # Return as string
+        return value_str
 
     def _load_checkpoint(self, resume_from: str) -> Optional[Dict[str, Any]]:
         """Load checkpoint from file or WandB."""
@@ -279,7 +368,7 @@ class HPORunner:
         Run HPO from command line arguments.
 
         This is the main entry point that handles everything:
-        - Parsing arguments
+        - Parsing arguments (including dot-notation config args)
         - Loading checkpoints if resuming
         - Restoring saved arguments
         - Running optimization
@@ -290,9 +379,27 @@ class HPORunner:
         Returns:
             Optuna study object
         """
-        # Parse command line
+        # Parse command line - use parse_known_args to capture dot-notation args
         parser = self._create_parser()
-        self.args = parser.parse_args(argv)
+        self.args, unknown_args = parser.parse_known_args(argv)
+
+        # Handle --config CLI argument (overrides __init__ base_config)
+        if self.args.config is not None:
+            config_path = Path(self.args.config)
+            if not config_path.exists():
+                logger.error(f"❌ Config file not found: {self.args.config}")
+                sys.exit(1)
+            logger.info(f"📄 Using config from CLI: {self.args.config}")
+            self.base_config = self.args.config
+
+        # Parse Lightning CLI-style dot-notation arguments
+        dot_notation_overrides = self._parse_dot_notation_args(unknown_args)
+
+        # Log parsed dot-notation args
+        if dot_notation_overrides:
+            logger.info(f"📝 Parsed {len(dot_notation_overrides)} dot-notation arguments:")
+            for key, value in dot_notation_overrides.items():
+                logger.info(f"   {key} = {value} ({type(value).__name__})")
 
         # Set default study name if not specified
         if not self.args.study_name:
@@ -311,7 +418,6 @@ class HPORunner:
             checkpoint = self._load_checkpoint(self.args.resume_from)
             if checkpoint:
                 # Pass sys.argv if argv is None so _was_arg_specified works correctly
-                import sys
                 actual_argv = argv if argv is not None else sys.argv
                 self._restore_args_from_checkpoint(checkpoint, actual_argv)
 
@@ -343,8 +449,36 @@ class HPORunner:
                     # If this fails, keep original behavior
                     pass
 
+                # Save checkpoint config_overrides for merging later
+                # This preserves non-"args.*" config overrides (like data.batch_size, data.num_workers)
+                # that were set in the original run
+                checkpoint_config_overrides = checkpoint.get('config_overrides', {})
+        else:
+            checkpoint_config_overrides = {}
+
         # Build config overrides from final args
         self.config_overrides = self._build_config_overrides()
+
+        # Merge checkpoint config overrides (for resume)
+        # Restore config overrides from checkpoint, but skip:
+        # 1. Non-persistent args (like n_trials which is extensible)
+        # 2. Keys already set in self.config_overrides (new CLI takes precedence)
+        for key, value in checkpoint_config_overrides.items():
+            # Skip non-persistent args (e.g., args.n_trials, args.resume_from)
+            if key.startswith("args."):
+                arg_name = key[5:]  # Remove "args." prefix
+                if arg_name in self.NON_PERSISTENT_ARGS:
+                    continue
+
+            # Restore if not already set by new CLI
+            if key not in self.config_overrides:
+                self.config_overrides[key] = value
+
+        # Merge dot-notation overrides
+        # These take precedence over defaults but are lower priority than explicit config overrides
+        for key, value in dot_notation_overrides.items():
+            if key not in self.config_overrides:
+                self.config_overrides[key] = value
 
         # Align trainer overrides with reference world_model_hpo_optuna.py
         # These ensure consistent validation cadence and UI behavior during HPO
@@ -431,6 +565,37 @@ class HPORunner:
             logger.info(f"📍 Added EarlyStoppingSteps callback: will stop trials at {self.args.trial_steps} steps")
             logger.info(f"   (Preserves LR schedule by not modifying trainer.max_steps)")
 
+        # Resolve pause settings from CLI args
+        # CLI args override __init__ parameters
+        final_enable_pause = self.enable_pause  # Default from __init__
+        if hasattr(self.args, 'enable_pause') and self.args.enable_pause is not None:
+            final_enable_pause = self.args.enable_pause
+        if hasattr(self.args, 'disable_pause') and self.args.disable_pause:
+            final_enable_pause = False
+
+        final_pause_key = self.pause_key  # Default from __init__
+        if hasattr(self.args, 'pause_key') and self.args.pause_key is not None:
+            final_pause_key = self.args.pause_key
+
+        # Add PauseCallback when using Reflow and pause is enabled
+        if use_reflow and final_enable_pause and HAS_PAUSE_CALLBACK:
+            # Create checkpoint directory for pause checkpoints
+            pause_checkpoint_dir = Path.cwd() / "pause_checkpoints"
+            if self.args.study_name:
+                pause_checkpoint_dir = pause_checkpoint_dir / self.args.study_name
+
+            pause_callback = PauseCallback(
+                checkpoint_dir=str(pause_checkpoint_dir),
+                enable_pause=True,
+                pause_key=final_pause_key,
+                show_pause_countdown=False,  # Keep UI clean during HPO
+            )
+            self.callbacks.append(pause_callback)
+            logger.info(f"⏸️  Added PauseCallback: press '{final_pause_key}' to pause at validation boundary")
+        elif use_reflow and final_enable_pause and not HAS_PAUSE_CALLBACK:
+            logger.warning("⚠️  PauseCallback requested but LightningReflow not available")
+            logger.warning("   Install LightningReflow for full pause functionality")
+
         # Determine an absolute local checkpoint directory so local resume paths are reliable
         # Use current working directory as the anchor to avoid module-relative saves
         try:
@@ -452,11 +617,12 @@ class HPORunner:
             sampler_name=self.args.sampler,
             pruner_name=self.args.pruner,
             save_every_n_trials=self.args.save_every,
-            enable_pause=True,
+            enable_pause=final_enable_pause,
             use_reflow=use_reflow,
             experiment_dir=self.args.experiment_dir,
             args=self.args,
             persist_args=True,
+            args_exclude=self.NON_PERSISTENT_ARGS,  # Pass non-persistent args to optimizer
             # Critical: disable Lightning checkpoints during HPO to avoid conflicts
             # with enable_checkpointing=False in HPO configs
             save_checkpoints=False,

@@ -557,62 +557,12 @@ class PausibleOptunaOptimizer:
             if 'n_trials' in optimizer_config_overrides:
                 del optimizer_config_overrides['n_trials']
 
-            # Display resume information
-            progress_percent = (self.total_trials_completed / n_trials) * 100
-            remaining = n_trials - self.total_trials_completed
-            logger.info(f"\n{'='*60}")
-            logger.info(f"📂 RESUMING OPTIMIZATION")
-            logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials already complete ({progress_percent:.1f}%)")
-            logger.info(f"Remaining: {remaining} trials to run")
-            
-            # Display config overrides table if any exist
-            # For display, we want to show n_trials specially (not args.n_trials)
-            display_items = {}
-            for key, value in merged_config_overrides.items():
-                if key == 'args.n_trials':
-                    # Show as 'n_trials' instead of 'args.n_trials' for cleaner display
-                    if n_trials_extended:
-                        display_items['n_trials'] = f"{saved_n_trials} → {n_trials}"
-                    else:
-                        display_items['n_trials'] = value
-                else:
-                    display_items[key] = value
+            # Display resume information (simplified for Lightning progress bar compatibility)
+            logger.info(f"\n📂 Resuming: {self.total_trials_completed}/{n_trials} trials complete")
 
-            if display_items:
-                logger.info(f"\n📋 Configuration Overrides:")
-                logger.info(f"{'─'*60}")
-                logger.info(f"{'Parameter':<35} {'Value':<15} {'Status':<10}")
-                logger.info(f"{'─'*60}")
-
-                for key, value in sorted(display_items.items()):
-                    # Special handling for n_trials display
-                    if key == 'n_trials':
-                        if '→' in str(value):
-                            status_emoji = "📈"  # Extended/increased
-                        else:
-                            status_emoji = "📌"  # Persistent from original
-                        logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
-                    else:
-                        status_emoji = ""
-                        if key in current_config_overrides:
-                            if key in saved_config_overrides:
-                                if saved_config_overrides[key] != current_config_overrides[key]:
-                                    status_emoji = "✅"  # Updated/changed value (green checkmark)
-                                    old_val = saved_config_overrides[key]
-                                    logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
-                                    logger.info(f"  └─ was: {old_val}")
-                                else:
-                                    status_emoji = "🔄"  # Unchanged - specified again with same value
-                                    logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
-                            else:
-                                status_emoji = "⭐"  # New parameter added (yellow star)
-                                logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
-                        else:
-                            status_emoji = "📌"  # Persistent from checkpoint (red pin)
-                            logger.info(f"{key:<35} {str(value):<15} {status_emoji}")
-
-                logger.info(f"{'─'*60}")
-                logger.info("Status: 📌=persistent, ⭐=new, ✅=changed, 🔄=unchanged, 📈=extended")
+            # Show n_trials extension if applicable
+            if n_trials_extended:
+                logger.info(f"   Extending trials: {saved_n_trials} → {n_trials}")
             
             # Store merged overrides for future saves (includes n_trials if extended)
             self.persistent_config_overrides = merged_config_overrides
@@ -679,7 +629,7 @@ class PausibleOptunaOptimizer:
             if config_overrides:
                 self.persistent_config_overrides.update(config_overrides)
             
-            # Display initial config overrides if any (avoid empty table)
+            # Display initial config overrides if any (simplified)
             if self.persistent_config_overrides:
                 # Filter out torch compile defaults when they are the only items
                 items = {
@@ -687,15 +637,7 @@ class PausibleOptunaOptimizer:
                     if v is not None and k != "model.init_args.torch_compile_settings"
                 }
                 if items:
-                    logger.info(f"\n📋 Configuration Overrides:")
-                    logger.info(f"{'─'*60}")
-                    logger.info(f"{'Parameter':<35} {'Value':<15}")
-                    logger.info(f"{'─'*60}")
-                    for key, value in sorted(items.items()):
-                        logger.info(f"{key:<35} {str(value):<15}")
-                    logger.info(f"{'─'*60}")
-            
-            logger.info(f"{'='*60}")
+                    logger.info(f"\n📋 Config overrides: {len(items)} parameter(s)")
         
         # Merge optimizer kwargs
         opt_kwargs = self.optimizer_kwargs.copy()
@@ -818,12 +760,9 @@ class PausibleOptunaOptimizer:
                 break
             
             try:
-                # Show clear progress before starting trial
+                # Show trial start (simplified for Lightning progress bar compatibility)
                 trial_number = self.total_trials_completed + 1
-                progress_percent = (self.total_trials_completed / n_trials) * 100
-                logger.info(f"\n{'='*60}")
-                logger.info(f"📊 Starting Trial {trial_number} of {n_trials} ({progress_percent:.1f}% complete)")
-                logger.info(f"{'='*60}")
+                logger.info(f"📊 Trial {trial_number}/{n_trials}")
                 
                 # Run single trial with automatic garbage collection
                 # gc_after_trial=True ensures memory is cleaned between trials
@@ -854,29 +793,19 @@ class PausibleOptunaOptimizer:
                         from ..utils.param_utils import simplify_param_names
                         trial_params = simplify_param_names(trial_params)
                     
-                    # Calculate updated progress
-                    progress_percent = (self.total_trials_completed / n_trials) * 100
-                    remaining_trials = n_trials - self.total_trials_completed
-                    
-                    # Log progress with clearer formatting
-                    logger.info(f"\n{'─'*60}")
-                    logger.info(f"Trial {trial_number} Result: {status}")
-                    logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials complete ({progress_percent:.1f}%)")
-                    logger.info(f"Remaining: {remaining_trials} trials")
+                    # Log trial result (simplified for Lightning progress bar compatibility)
+                    logger.info(f"✓ Trial {trial_number}: {status} | {self.total_trials_completed}/{n_trials} complete")
                     
                     try:
                         # study.best_trial raises an exception if no COMPLETE trials exist
                         best_trial = study.best_trial
                         if best_trial:
                             logger.info(
-                                f"Current Best: {study.best_value:.6f} (from trial {best_trial.number})"
+                                f"   Best: {study.best_value:.6f} (trial {best_trial.number})"
                             )
-                        else:
-                            logger.info(f"Current Best: No successful trials yet")
                     except (ValueError, RuntimeError):
                         # This happens when there are no COMPLETE trials (only PRUNED)
-                        logger.info(f"Current Best: No successful trials yet")
-                    logger.info(f"{'─'*60}")
+                        pass  # Skip logging if no successful trials yet
 
                     # Always mirror local checkpoint if configured
                     if self.local_checkpoint_dir:
@@ -916,10 +845,7 @@ class PausibleOptunaOptimizer:
                         break
                 else:
                     # Trial failed (actual error, not pruning)
-                    logger.info(f"\n{'─'*60}")
-                    logger.info(f"Trial {trial_number} Result: ❌ FAILED")
-                    logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials complete ({progress_percent:.1f}%)")
-                    logger.info(f"{'─'*60}")
+                    logger.info(f"✗ Trial {trial_number}: ❌ FAILED | {self.total_trials_completed}/{n_trials} complete")
                     
                     # Check for pause or quit request after failed trial
                     if self._update_pause_from_keyboard():
@@ -990,10 +916,7 @@ class PausibleOptunaOptimizer:
             logger.info(f"ℹ️  No new finished trials to save since last checkpoint")
         
         if self.should_pause:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"⏸️  OPTIMIZATION PAUSED")
-            logger.info(f"Progress: {self.total_trials_completed}/{n_trials} trials complete ({(self.total_trials_completed/n_trials)*100:.1f}%)")
-            logger.info(f"Remaining: {n_trials - self.total_trials_completed} trials")
+            logger.info(f"\n⏸️  OPTIMIZATION PAUSED | {self.total_trials_completed}/{n_trials} trials complete")
             if self.wandb_project:
                 if study_was_saved:
                     logger.info(f"\n📝 To resume, run:")

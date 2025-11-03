@@ -167,20 +167,9 @@ class TestPersistentConfigOverrides:
                     config_overrides=new_overrides
                 )
             
-            # Check that the table was displayed
-            log_text = caplog.text
-            assert "📋 Configuration Overrides:" in log_text
-            assert "trial_steps" in log_text
-            assert "5000" in log_text  # New value
-            assert "✅" in log_text  # Changed value emoji (green checkmark)
-            assert "was: 4000" in log_text  # Old value shown
-            assert "trainer.val_check_interval" in log_text
-            assert "🔄" in log_text  # Unchanged emoji (circular arrows)
-            assert "trainer.enable_progress_bar" in log_text
-            assert "⭐" in log_text  # New parameter emoji (yellow star)
-            assert "trainer.limit_val_batches" in log_text
-            assert "📌" in log_text  # Persistent emoji (red pin)
-            
+            # Note: Config overrides are not displayed on resume (simplified logging)
+            # Just verify that overrides were properly merged
+
             # Verify merged overrides
             assert optimizer.persistent_config_overrides["trial_steps"] == 5000
             assert optimizer.persistent_config_overrides["trainer.val_check_interval"] == 500
@@ -216,14 +205,11 @@ class TestPersistentConfigOverrides:
                     config_overrides=config_overrides
                 )
             
-            # Check that overrides were displayed
+            # Check that overrides were displayed (simplified format)
             log_text = caplog.text
             assert "🆕 STARTING NEW OPTIMIZATION" in log_text
-            assert "📋 Configuration Overrides:" in log_text
-            assert "trial_steps" in log_text
-            assert "6000" in log_text
-            assert "trainer.val_check_interval" in log_text
-            assert "1000" in log_text
+            assert "📋 Config overrides:" in log_text
+            assert "parameter(s)" in log_text
             
             # Verify overrides were stored
             assert optimizer.persistent_config_overrides == config_overrides
@@ -249,9 +235,9 @@ class TestPersistentConfigOverrides:
             with caplog.at_level(logging.INFO):
                 study = optimizer.optimize(n_trials=5)
             
-            # Check that no override table was shown
+            # Check that no override message was shown
             log_text = caplog.text
-            assert "📋 Configuration Overrides:" not in log_text
+            assert "📋 Config overrides:" not in log_text
             assert optimizer.persistent_config_overrides == {}
 
 

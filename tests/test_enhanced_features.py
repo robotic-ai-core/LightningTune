@@ -448,6 +448,7 @@ class TestIntegration:
                 study_name="test_study",
                 persist_args=True,
                 args=args,
+                args_exclude={'resume_from', 'study_name', 'n_trials'},
                 simplify_param_names=True,
                 compile_mode="safe",
                 local_checkpoint_dir=tmp_path / "checkpoints"
