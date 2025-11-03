@@ -577,24 +577,20 @@ class HPORunner:
         if hasattr(self.args, 'pause_key') and self.args.pause_key is not None:
             final_pause_key = self.args.pause_key
 
-        # Add PauseCallback when using Reflow and pause is enabled
-        if use_reflow and final_enable_pause and HAS_PAUSE_CALLBACK:
-            # Create checkpoint directory for pause checkpoints
-            pause_checkpoint_dir = Path.cwd() / "pause_checkpoints"
-            if self.args.study_name:
-                pause_checkpoint_dir = pause_checkpoint_dir / self.args.study_name
+        # Note: We do NOT add PauseCallback during HPO runs
+        # HPO uses PausibleOptunaOptimizer which implements trial-boundary pause
+        # (pauses AFTER completing a trial, not during training at validation boundaries)
+        # Adding PauseCallback here would cause validation-boundary pauses which:
+        #   - Interrupt trials mid-training (corrupts trial metrics)
+        #   - Prevents fair trial comparison in Optuna
+        #   - Wastes GPU time on incomplete trials
+        # For single training runs (not HPO), use train_world_model.py which includes PauseCallback
 
-            pause_callback = PauseCallback(
-                checkpoint_dir=str(pause_checkpoint_dir),
-                enable_pause=True,
-                pause_key=final_pause_key,
-                show_pause_countdown=False,  # Keep UI clean during HPO
-            )
-            self.callbacks.append(pause_callback)
-            logger.info(f"⏸️  Added PauseCallback: press '{final_pause_key}' to pause at validation boundary")
-        elif use_reflow and final_enable_pause and not HAS_PAUSE_CALLBACK:
-            logger.warning("⚠️  PauseCallback requested but LightningReflow not available")
-            logger.warning("   Install LightningReflow for full pause functionality")
+        if final_enable_pause:
+            logger.info(f"⏸️  HPO pause enabled: press '{final_pause_key}' to pause at TRIAL boundary")
+            logger.info(f"   (Trials will complete before pausing - controlled by PausibleOptunaOptimizer)")
+        else:
+            logger.info("⏸️  HPO pause disabled")
 
         # Determine an absolute local checkpoint directory so local resume paths are reliable
         # Use current working directory as the anchor to avoid module-relative saves
