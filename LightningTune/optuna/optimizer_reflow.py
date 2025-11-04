@@ -387,19 +387,19 @@ class ReflowOptunaDrivenOptimizer:
                         disable_pause_callback=True  # HPO manages pause at trial boundaries
                     )
 
-                    # CRITICAL: Remove PauseCallback from callbacks if it was added
-                    # Even with disable_pause_callback=True, the callback might still be added
-                    # We keep FlowProgressBarCallback for visual feedback, only remove PauseCallback
+                    # CRITICAL: Remove PauseCallback AND FlowProgressBarCallback
+                    # Both have keyboard handlers that conflict with PausibleOptunaOptimizer
+                    # Use Lightning's standard progress bar instead (no keyboard monitoring)
                     try:
-                        from lightning_reflow.callbacks.pause import PauseCallback
+                        from lightning_reflow.callbacks.pause import PauseCallback, FlowProgressBarCallback
                         if hasattr(reflow, 'callbacks') and reflow.callbacks:
                             original_count = len(reflow.callbacks)
                             reflow.callbacks = [
                                 cb for cb in reflow.callbacks
-                                if not isinstance(cb, PauseCallback)
+                                if not isinstance(cb, (PauseCallback, FlowProgressBarCallback))
                             ]
                             if len(reflow.callbacks) < original_count:
-                                logger.info(f"🚫 Removed {original_count - len(reflow.callbacks)} PauseCallback(s) for HPO")
+                                logger.info(f"🚫 Removed {original_count - len(reflow.callbacks)} Reflow callback(s) for HPO (using Lightning's standard progress bar)")
                     except ImportError:
                         pass  # Callbacks not available
 
