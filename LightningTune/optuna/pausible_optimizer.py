@@ -1268,9 +1268,12 @@ class PausibleOptunaOptimizer:
         t = getattr(self, '_pause_poll_thread', None)
         if t and t.is_alive():
             try:
-                t.join(timeout=1.0)
-            except Exception:
-                pass
+                # Wait longer for thread to exit cleanly (keyboard reads can be slow)
+                t.join(timeout=3.0)
+                if t.is_alive():
+                    logger.warning("⚠️  Pause polling thread did not stop cleanly")
+            except Exception as e:
+                logger.warning(f"⚠️  Error stopping pause thread: {e}")
 
     def _pause_input_loop(self) -> None:
         """Continuously poll keyboard handler for immediate schedule/cancel feedback."""
