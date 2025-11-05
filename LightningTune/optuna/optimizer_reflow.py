@@ -202,6 +202,7 @@ class ReflowOptunaDrivenOptimizer:
             Objective function that takes a trial and returns a metric value
         """
         def objective(trial: optuna.Trial) -> float:
+            logger.info(f"🔧 [DIAG] ReflowOptunaDrivenOptimizer.objective() called for trial {trial.number}")
             # Start with base config (defensive for None)
             config = (self.base_config or {}).copy()
             
@@ -369,6 +370,7 @@ class ReflowOptunaDrivenOptimizer:
                     
                     # Create LightningReflow instance
                     # Note: logger is passed through trainer_defaults
+                    logger.info(f"🔧 [DIAG] About to instantiate LightningReflow with disable_pause_callback=True")
                     reflow = LightningReflow(
                         model_class=self.model_class,
                         datamodule_class=self.datamodule_class,

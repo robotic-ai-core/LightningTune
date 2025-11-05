@@ -699,6 +699,8 @@ class PausibleOptunaOptimizer:
             logger.warning(f"⚠️  Reflow check failed with exception: {e}, disabling Reflow")
             self.use_reflow = False
         OptimizerClass = ReflowOptunaDrivenOptimizer if self.use_reflow else OptunaDrivenOptimizer
+        logger.info(f"🔧 [DIAG] Selected optimizer class: {OptimizerClass.__name__}")
+
         # Merge persistent overrides and runtime-only overrides for the optimizer
         _config_overrides_for_optimizer = dict(config_overrides or {})
         if runtime_overrides:
@@ -706,8 +708,10 @@ class PausibleOptunaOptimizer:
 
         pre_injected_optimizer = getattr(self, 'underlying_optimizer', None)
         if pre_injected_optimizer is not None:
+            logger.info(f"🔧 [DIAG] Using pre-injected optimizer: {type(pre_injected_optimizer).__name__}")
             optimizer = pre_injected_optimizer
         else:
+            logger.info(f"🔧 [DIAG] Instantiating new {OptimizerClass.__name__}...")
             optimizer = OptimizerClass(
                 base_config=self.base_config,
                 search_space=self.search_space,
