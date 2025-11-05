@@ -230,6 +230,9 @@ class PausibleOptunaOptimizer:
         # Backward-compatibility shim for tests (deprecated, will be removed)
         self.keyboard_monitor = None
         self._pause_requested: bool = False
+        # Initialize polling thread attributes
+        self._pause_poll_thread = None
+        self._polling_active = False
         if enable_pause and os.environ.get("LT_CHILD", "0") != "1":
             if create_improved_keyboard_handler is not None:
                 self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
@@ -751,8 +754,10 @@ class PausibleOptunaOptimizer:
                 logger.warning("⚠️  Pause functionality disabled")
                 self.keyboard_handler = None
 
-        # Note: We check keyboard from main thread (between trials) instead of background polling.
-        # This follows LightningReflow's pattern and avoids TTY corruption from concurrent print().
+        # Start background polling for immediate schedule/cancel feedback
+        # Note: ImprovedKeyboardHandler proves background threads CAN use print() successfully
+        if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
+            self._start_pause_polling_thread()
 
         # Run trials with periodic saves
         trials_in_batch = 0
@@ -916,6 +921,8 @@ class PausibleOptunaOptimizer:
             except Exception as e:
                 logger.warning(f"⚠️  [DIAG] Error stopping keyboard monitoring: {e}")
         self._pause_requested = False
+        # Stop background polling thread
+        self._stop_pause_polling_thread()
 
         # Handle pause save or final save
         study_was_saved = False
@@ -1078,10 +1085,7 @@ class PausibleOptunaOptimizer:
         return out
 
     def _update_pause_from_keyboard(self) -> bool:
-        """Poll keyboard handler and handle pause/quit keys (main thread check).
-
-        Called between trials from the main thread (similar to LightningReflow's approach).
-        This allows safe use of print() for immediate feedback without TTY corruption.
+        """Poll keyboard handler and handle pause/quit keys.
 
         - 'p' toggles a scheduled pause at the next trial boundary
         - 'q' requests immediate quit (sets flag to stop loop)
@@ -1089,6 +1093,11 @@ class PausibleOptunaOptimizer:
 
         Returns True if pause is currently requested.
         """
+        # If background polling is active, just return current flag (polling thread handles keys)
+        if getattr(self, '_polling_active', False):
+            return self._pause_requested
+
+        # Otherwise check keyboard from main thread
         try:
             if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
                 key = self.keyboard_handler.get_key()
@@ -1298,3 +1307,83 @@ class PausibleOptunaOptimizer:
         except Exception as e:
             logger.error(f"Failed to load local study: {e}")
             return None
+
+    def _start_pause_polling_thread(self) -> None:
+        """Start a lightweight background thread to poll keyboard input."""
+        if self._pause_poll_thread and self._pause_poll_thread.is_alive():
+            logger.info(f"🔧 [DIAG] Pause polling thread already running")
+            return
+        logger.info(f"🔧 [DIAG] Starting pause polling thread")
+        self._polling_active = True
+        self._pause_poll_thread = threading.Thread(target=self._pause_input_loop, daemon=True)
+        self._pause_poll_thread.start()
+        logger.info(f"🔧 [DIAG] Pause polling thread started")
+
+    def _stop_pause_polling_thread(self) -> None:
+        """Stop the background polling thread if running."""
+        logger.info(f"🔧 [DIAG] Stopping pause polling thread")
+        if getattr(self, '_polling_active', False):
+            self._polling_active = False
+        t = getattr(self, '_pause_poll_thread', None)
+        if t and t.is_alive():
+            logger.info(f"🔧 [DIAG] Waiting for thread to exit...")
+            try:
+                t.join(timeout=1.0)
+                if not t.is_alive():
+                    logger.info(f"🔧 [DIAG] Pause polling thread stopped successfully")
+            except Exception as e:
+                logger.warning(f"⚠️  [DIAG] Error stopping pause thread: {e}")
+
+    def _pause_input_loop(self) -> None:
+        """Continuously poll keyboard handler for immediate schedule/cancel feedback.
+
+        This runs in a background thread. ImprovedKeyboardHandler proves that background
+        threads CAN safely use print() for terminal output.
+        """
+        last_state = self._pause_requested
+        while getattr(self, '_polling_active', False):
+            try:
+                if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
+                    key = self.keyboard_handler.get_key()
+                    if key:
+                        raw = str(key)
+                        skey = raw.lower()
+                        if skey == 'p':
+                            # Toggle pause state
+                            self._pause_requested = not self._pause_requested
+                            if self._pause_requested and not last_state:
+                                msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
+                                print(msg)  # Safe: ImprovedKeyboardHandler proves this works!
+                                logger.info(msg)
+                                # Also log to file
+                                try:
+                                    with open("/tmp/hpo_pause.log", "a") as f:
+                                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
+                                        f.flush()
+                                except:
+                                    pass
+                            elif (not self._pause_requested) and last_state:
+                                msg = "\n❌ Pause CANCELLED ('p' pressed again)"
+                                print(msg)  # Safe: ImprovedKeyboardHandler proves this works!
+                                logger.info(msg)
+                                try:
+                                    with open("/tmp/hpo_pause.log", "a") as f:
+                                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
+                                        f.flush()
+                                except:
+                                    pass
+                            last_state = self._pause_requested
+                        elif skey == 'q':
+                            self._quit_after_current = True
+                            msg = "\n🛑 Quit requested ('q' pressed)"
+                            print(msg)
+                            logger.info(msg)
+                        elif raw == "\x03":  # Ctrl+C
+                            self._pause_requested = True
+                            self.should_pause = True
+                            msg = "\n⏸️  Ctrl+C detected - pausing gracefully"
+                            print(msg)
+                            logger.info(msg)
+            except Exception:
+                pass
+            time.sleep(0.05)
