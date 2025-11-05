@@ -34,7 +34,10 @@ _diag_log_file = "/tmp/hpo_diagnostic.log"
 _file_handler = logging.FileHandler(_diag_log_file, mode='a')
 _file_handler.setLevel(logging.DEBUG)
 _file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-logging.getLogger(__name__).addHandler(_file_handler)
+_module_logger = logging.getLogger(__name__)
+_module_logger.addHandler(_file_handler)
+_module_logger.setLevel(logging.DEBUG)  # Ensure logger level allows DEBUG/INFO
+_file_handler.flush()  # Force immediate flush
 from .optimizer_reflow import ReflowOptunaDrivenOptimizer
 from .factories import create_sampler, create_pruner
 from ..persistence import (
@@ -64,6 +67,8 @@ except Exception:  # Fallback if Reflow is not available
     create_improved_keyboard_handler = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # Ensure logger level allows DEBUG/INFO
+logger.info(f"🔧 [DIAG] PausibleOptunaOptimizer module loaded, logging to {_diag_log_file}")
 
 
 class PausibleOptunaOptimizer:
