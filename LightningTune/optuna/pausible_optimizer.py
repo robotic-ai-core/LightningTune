@@ -773,7 +773,7 @@ class PausibleOptunaOptimizer:
             if self._update_pause_from_keyboard():
                 self.should_pause = True
                 msg = "\n⏸️  Executing pause at trial boundary..."
-                print(msg)  # Print directly so it shows up even with progress bar
+                # Use logger only for consistency; file logging survives tmux crashes
                 logger.info(msg)
                 # Log to file for visibility
                 try:
@@ -1332,9 +1332,9 @@ class PausibleOptunaOptimizer:
                             self._pause_requested = not self._pause_requested
                             if self._pause_requested and not last_state:
                                 msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
-                                print(msg)  # Print directly so it shows up even with progress bar
+                                # CRITICAL: Do NOT use print() from background thread - causes TTY corruption with progress bar!
                                 logger.info(msg)
-                                # Also log to file for visibility (progress bar may hide terminal output)
+                                # File logging is sufficient and survives tmux crashes
                                 try:
                                     with open("/tmp/hpo_pause.log", "a") as f:
                                         f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
@@ -1343,8 +1343,9 @@ class PausibleOptunaOptimizer:
                                     pass
                             elif (not self._pause_requested) and last_state:
                                 msg = "\n❌ Pause CANCELLED ('p' pressed again)"
-                                print(msg)  # Print directly so it shows up even with progress bar
+                                # CRITICAL: Do NOT use print() from background thread - causes TTY corruption with progress bar!
                                 logger.info(msg)
+                                # File logging is sufficient and survives tmux crashes
                                 try:
                                     with open("/tmp/hpo_pause.log", "a") as f:
                                         f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
@@ -1355,13 +1356,13 @@ class PausibleOptunaOptimizer:
                         elif skey == 'q':
                             self._quit_after_current = True
                             msg = "\n🛑 Quit requested ('q' pressed). Will stop after current trial."
-                            print(msg)  # Print directly so it shows up even with progress bar
+                            # CRITICAL: Do NOT use print() from background thread - causes TTY corruption with progress bar!
                             logger.info(msg)
                         elif raw == "\x03":  # Ctrl+C in cbreak mode
                             self._pause_requested = True
                             self.should_pause = True
                             msg = "\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary..."
-                            print(msg)  # Print directly so it shows up even with progress bar
+                            # CRITICAL: Do NOT use print() from background thread - causes TTY corruption with progress bar!
                             logger.info(msg)
             except Exception as e:
                 # Log read errors for diagnostics
