@@ -64,7 +64,7 @@ class HPORunner:
         'study_name': {'type': str, 'default': None, 'help': 'Study name'},
         'resume_from': {'type': str, 'default': None, 'help': 'Resume from checkpoint'},
         'experiment_dir': {'type': str, 'default': None, 'help': 'Directory for results'},
-        'use_reflow': {'type': bool, 'default': True, 'action': 'store_true'},
+        'use_reflow': {'type': bool, 'default': False, 'action': 'store_true'},  # Default to False (matches stable ab17db7)
         'no_reflow': {'type': bool, 'default': False, 'action': 'store_true'},
         'test_mode': {'type': bool, 'default': False, 'action': 'store_true'},
         'enable_pause': {'type': bool, 'default': None, 'action': 'store_true', 'help': 'Enable interactive pause (press p to pause)'},
