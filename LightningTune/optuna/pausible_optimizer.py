@@ -739,16 +739,22 @@ class PausibleOptunaOptimizer:
             custom_obj_factory = getattr(self, 'create_objective', None)
             objective = None
             if callable(custom_obj_factory):
+                logger.info(f"🔧 [DIAG] Found custom create_objective, calling it...")
                 try:
                     candidate = custom_obj_factory()
                     if callable(candidate):
                         objective = candidate
-                except Exception:
+                        logger.info(f"🔧 [DIAG] Got objective from custom create_objective")
+                except Exception as e:
+                    logger.info(f"🔧 [DIAG] Custom create_objective failed: {e}")
                     objective = None
             if objective is None:
                 under = getattr(self, 'underlying_optimizer', optimizer)
+                logger.info(f"🔧 [DIAG] Calling create_objective on underlying optimizer: {type(under).__name__}")
                 objective = under.create_objective()
-        except Exception:
+                logger.info(f"🔧 [DIAG] Got objective function from {type(under).__name__}")
+        except Exception as e:
+            logger.warning(f"⚠️  [DIAG] Exception getting objective: {e}, falling back to optimizer.create_objective()")
             objective = optimizer.create_objective()
         
         # Start keyboard monitoring if available
@@ -810,10 +816,12 @@ class PausibleOptunaOptimizer:
                 # Show trial start (simplified for Lightning progress bar compatibility)
                 trial_number = self.total_trials_completed + 1
                 logger.info(f"📊 Trial {trial_number}/{n_trials}")
-                
+
                 # Run single trial with automatic garbage collection
                 # gc_after_trial=True ensures memory is cleaned between trials
+                logger.info(f"🔧 [DIAG] About to call study.optimize with objective type: {type(objective)}")
                 study.optimize(objective, n_trials=1, show_progress_bar=False, gc_after_trial=True)
+                logger.info(f"🔧 [DIAG] study.optimize completed for trial {trial_number}")
                 
                 # Additional memory cleanup to prevent accumulation
                 from .memory_cleanup import cleanup_trial_resources
