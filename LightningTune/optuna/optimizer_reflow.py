@@ -394,14 +394,26 @@ class ReflowOptunaDrivenOptimizer:
                         from lightning_reflow.callbacks.pause import PauseCallback, FlowProgressBarCallback
                         if hasattr(reflow, 'callbacks') and reflow.callbacks:
                             original_count = len(reflow.callbacks)
+                            # Log what callbacks are present
+                            callback_types = [type(cb).__name__ for cb in reflow.callbacks]
+                            logger.info(f"🔧 [DIAG] Reflow callbacks before removal: {callback_types}")
+
                             reflow.callbacks = [
                                 cb for cb in reflow.callbacks
                                 if not isinstance(cb, (PauseCallback, FlowProgressBarCallback))
                             ]
+
                             if len(reflow.callbacks) < original_count:
-                                logger.info(f"🚫 Removed {original_count - len(reflow.callbacks)} Reflow callback(s) for HPO (using Lightning's standard progress bar)")
-                    except ImportError:
-                        pass  # Callbacks not available
+                                removed = original_count - len(reflow.callbacks)
+                                logger.info(f"🚫 Removed {removed} Reflow callback(s) for HPO (using Lightning's standard progress bar)")
+                            else:
+                                logger.info(f"✅ No conflicting Reflow callbacks found (FlowProgressBarCallback not present)")
+                        else:
+                            logger.info(f"🔧 [DIAG] Reflow has no callbacks to check")
+                    except ImportError as e:
+                        logger.info(f"🔧 [DIAG] Could not import Reflow callbacks: {e}")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Error checking Reflow callbacks: {e}")
 
                     # Run training
                     result = reflow.fit()
