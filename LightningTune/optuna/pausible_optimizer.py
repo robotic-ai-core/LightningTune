@@ -219,8 +219,10 @@ class PausibleOptunaOptimizer:
         if enable_pause and os.environ.get("LT_CHILD", "0") != "1":
             if create_improved_keyboard_handler is not None:
                 self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
+                logger.info(f"🔧 [DIAG] PausibleOptunaOptimizer: Created keyboard handler (type: {type(self.keyboard_handler).__name__})")
             else:
                 self.keyboard_handler = None
+                logger.warning("🔧 [DIAG] PausibleOptunaOptimizer: keyboard handler creation failed (create_improved_keyboard_handler not available)")
     
     
     def _verify_study_integrity(self, study: optuna.Study) -> tuple[bool, int, str]:
@@ -717,10 +719,12 @@ class PausibleOptunaOptimizer:
                         logger.warning("⚠️  Pause functionality will be disabled")
                         self.keyboard_handler = None
                     else:
+                        logger.info(f"🔧 [DIAG] Starting keyboard monitoring (handler: {type(self.keyboard_handler).__name__})")
                         self.keyboard_handler.start_monitoring()
                         logger.info("⌨️  Keyboard monitoring active - press 'p' to pause between trials")
                         logger.info("   Pause events will be logged to /tmp/hpo_pause.log")
                 else:
+                    logger.info(f"🔧 [DIAG] Starting keyboard monitoring (handler: {type(self.keyboard_handler).__name__}, no is_available check)")
                     self.keyboard_handler.start_monitoring()
             except Exception as e:
                 logger.warning(f"⚠️  Keyboard monitoring failed to start: {e}")
@@ -887,10 +891,12 @@ class PausibleOptunaOptimizer:
         
         # Stop keyboard monitoring and clear pause state
         if self.keyboard_handler and hasattr(self.keyboard_handler, 'stop_monitoring'):
+            logger.info(f"🔧 [DIAG] Stopping keyboard monitoring (handler: {type(self.keyboard_handler).__name__})")
             try:
                 self.keyboard_handler.stop_monitoring()
-            except Exception:
-                pass
+                logger.info(f"🔧 [DIAG] Keyboard monitoring stopped successfully")
+            except Exception as e:
+                logger.warning(f"⚠️  [DIAG] Error stopping keyboard monitoring: {e}")
         self._pause_requested = False
         # Stop background polling thread
         self._stop_pause_polling_thread()
@@ -1256,24 +1262,33 @@ class PausibleOptunaOptimizer:
     def _start_pause_polling_thread(self) -> None:
         """Start a lightweight background thread to poll keyboard input for 'p'."""
         if self._pause_poll_thread and self._pause_poll_thread.is_alive():
+            logger.info(f"🔧 [DIAG] Pause polling thread already running (thread id: {self._pause_poll_thread.ident})")
             return
+        logger.info(f"🔧 [DIAG] Starting pause polling thread (keyboard_handler: {type(self.keyboard_handler).__name__ if self.keyboard_handler else 'None'})")
         self._polling_active = True
         self._pause_poll_thread = threading.Thread(target=self._pause_input_loop, daemon=True, name="PauseInputWatcher")
         self._pause_poll_thread.start()
+        logger.info(f"🔧 [DIAG] Pause polling thread started (thread id: {self._pause_poll_thread.ident})")
 
     def _stop_pause_polling_thread(self) -> None:
         """Stop the background polling thread if running."""
+        logger.info(f"🔧 [DIAG] Stopping pause polling thread (_polling_active: {getattr(self, '_polling_active', False)})")
         if getattr(self, '_polling_active', False):
             self._polling_active = False
         t = getattr(self, '_pause_poll_thread', None)
         if t and t.is_alive():
+            logger.info(f"🔧 [DIAG] Waiting for thread {t.ident} to exit (timeout: 3s)...")
             try:
                 # Wait longer for thread to exit cleanly (keyboard reads can be slow)
                 t.join(timeout=3.0)
                 if t.is_alive():
-                    logger.warning("⚠️  Pause polling thread did not stop cleanly")
+                    logger.warning(f"⚠️  [DIAG] Pause polling thread {t.ident} did not stop cleanly after 3s")
+                else:
+                    logger.info(f"🔧 [DIAG] Pause polling thread {t.ident} stopped successfully")
             except Exception as e:
-                logger.warning(f"⚠️  Error stopping pause thread: {e}")
+                logger.warning(f"⚠️  [DIAG] Error stopping pause thread: {e}")
+        else:
+            logger.info(f"🔧 [DIAG] No active pause polling thread to stop")
 
     def _pause_input_loop(self) -> None:
         """Continuously poll keyboard handler for immediate schedule/cancel feedback."""
