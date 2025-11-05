@@ -685,12 +685,19 @@ class PausibleOptunaOptimizer:
         try:
             if self.use_reflow:
                 is_type = isinstance(self.model_class, type)
+                logger.info(f"🔧 [DIAG] Reflow check: model_class={self.model_class}, is_type={is_type}")
                 from lightning.pytorch import LightningModule as _LM
+                if is_type:
+                    is_subclass = issubclass(self.model_class, _LM)
+                    logger.info(f"🔧 [DIAG] Reflow check: issubclass(model_class, LightningModule)={is_subclass}")
                 if (not is_type) or (not issubclass(self.model_class, _LM)):
                     self.use_reflow = False
                     logger.info("⚠️  Disabling Reflow: model_class is not a LightningModule type")
-        except Exception:
-            pass
+                else:
+                    logger.info(f"✅ Using Reflow: model_class is a LightningModule")
+        except Exception as e:
+            logger.warning(f"⚠️  Reflow check failed with exception: {e}, disabling Reflow")
+            self.use_reflow = False
         OptimizerClass = ReflowOptunaDrivenOptimizer if self.use_reflow else OptunaDrivenOptimizer
         # Merge persistent overrides and runtime-only overrides for the optimizer
         _config_overrides_for_optimizer = dict(config_overrides or {})
