@@ -1317,6 +1317,8 @@ class PausibleOptunaOptimizer:
 
     def _pause_input_loop(self) -> None:
         """Continuously poll keyboard handler for immediate schedule/cancel feedback."""
+        import threading
+        logger.info(f"🔧 [DIAG] _pause_input_loop ENTERED (thread: {threading.current_thread().ident})")
         last_state = self._pause_requested
         while getattr(self, '_polling_active', False):
             try:
@@ -1361,7 +1363,9 @@ class PausibleOptunaOptimizer:
                             msg = "\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary..."
                             print(msg)  # Print directly so it shows up even with progress bar
                             logger.info(msg)
-            except Exception:
-                # Ignore read errors
+            except Exception as e:
+                # Log read errors for diagnostics
+                logger.warning(f"🔧 [DIAG] Exception in _pause_input_loop: {type(e).__name__}: {e}")
                 pass
             time.sleep(0.05)
+        logger.info(f"🔧 [DIAG] _pause_input_loop EXITING (thread: {threading.current_thread().ident})")
