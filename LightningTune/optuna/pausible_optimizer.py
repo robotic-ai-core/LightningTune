@@ -583,18 +583,27 @@ class PausibleOptunaOptimizer:
                 del optimizer_config_overrides['n_trials']
 
             # Display resume information (simplified for Lightning progress bar compatibility)
-            logger.info(f"\n📂 Resuming: {self.total_trials_completed}/{n_trials} trials complete")
+            remaining = n_trials - self.total_trials_completed
+            progress_pct = (self.total_trials_completed / n_trials * 100) if n_trials > 0 else 0
 
-            # Show n_trials extension if applicable
+            # Use print() for immediate visibility
+            print("\n" + "="*60)
+            print(f"📂 RESUMING STUDY: {self.study_name}")
+            print(f"   Progress: {self.total_trials_completed}/{n_trials} trials complete ({progress_pct:.1f}%)")
+            print(f"   Remaining: {remaining} trials to run")
+            if n_trials_extended:
+                print(f"   Extending trials: {saved_n_trials} → {n_trials}")
+            print("="*60 + "\n")
+
+            # Also log for consistency
+            logger.info(f"📂 Resuming: {self.total_trials_completed}/{n_trials} trials complete ({progress_pct:.1f}%)")
             if n_trials_extended:
                 logger.info(f"   Extending trials: {saved_n_trials} → {n_trials}")
-            
+
             # Store merged overrides for future saves (includes n_trials if extended)
             self.persistent_config_overrides = merged_config_overrides
             # Use the version without n_trials for the optimizer
             config_overrides = optimizer_config_overrides
-            
-            logger.info(f"{'='*60}")
             
             # Verify study integrity - count finished trials (COMPLETE + PRUNED)
             finished_count = len([t for t in study.trials 
