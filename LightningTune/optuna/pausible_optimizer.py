@@ -28,6 +28,13 @@ from lightning import LightningModule
 from lightning.pytorch.callbacks import Callback
 
 from .optimizer import OptunaDrivenOptimizer
+
+# Setup diagnostic file logging
+_diag_log_file = "/tmp/hpo_diagnostic.log"
+_file_handler = logging.FileHandler(_diag_log_file, mode='a')
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+logging.getLogger(__name__).addHandler(_file_handler)
 from .optimizer_reflow import ReflowOptunaDrivenOptimizer
 from .factories import create_sampler, create_pruner
 from ..persistence import (
@@ -150,7 +157,12 @@ class PausibleOptunaOptimizer:
             logger.info(f"📑 Merged base and override configs")
         else:
             self.base_config = base_config
-            
+
+        # Log initialization to diagnostic file
+        logger.info(f"🔧 [DIAG] ========== PausibleOptunaOptimizer.__init__() START ==========")
+        logger.info(f"🔧 [DIAG] Diagnostic logs: {_diag_log_file}")
+        logger.info(f"🔧 [DIAG] enable_pause={enable_pause}, test_mode={test_mode}")
+
         self.search_space = search_space
         self.model_class = model_class
         self.datamodule_class = datamodule_class
@@ -223,8 +235,10 @@ class PausibleOptunaOptimizer:
             else:
                 self.keyboard_handler = None
                 logger.warning("🔧 [DIAG] PausibleOptunaOptimizer: keyboard handler creation failed (create_improved_keyboard_handler not available)")
-    
-    
+
+        logger.info(f"🔧 [DIAG] ========== PausibleOptunaOptimizer.__init__() COMPLETE ==========")
+
+
     def _verify_study_integrity(self, study: optuna.Study) -> tuple[bool, int, str]:
         """
         Verify study integrity and count finished trials.
@@ -406,6 +420,10 @@ class PausibleOptunaOptimizer:
         Returns:
             Optuna study with results
         """
+        logger.info(f"🔧 [DIAG] ========== optimize() START ==========")
+        logger.info(f"🔧 [DIAG] n_trials={n_trials}, resume_from={resume_from}")
+        logger.info(f"🔧 [DIAG] Diagnostic log file: {_diag_log_file}")
+
         # Handle automatic argument persistence
         if self.persist_args and self.args:
             args_dict = self._extract_persistable_args()
@@ -975,7 +993,9 @@ class PausibleOptunaOptimizer:
         except ValueError:
             # No completed trials yet
             logger.info("No trials completed successfully yet.")
-        
+
+        logger.info(f"🔧 [DIAG] ========== optimize() COMPLETE ==========")
+
         return study
 
     # --- Internal helpers -------------------------------------------------
