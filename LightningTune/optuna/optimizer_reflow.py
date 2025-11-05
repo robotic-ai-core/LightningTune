@@ -34,7 +34,14 @@ from .search_space import OptunaSearchSpace
 from .callbacks import OptunaPruningCallback
 from ..utils.config_utils import apply_dotted_updates, load_config
 
+# Setup diagnostic file logging (shared with pausible_optimizer)
+_diag_log_file = "/tmp/hpo_diagnostic.log"
+_file_handler = logging.FileHandler(_diag_log_file, mode='a')
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
 logger = logging.getLogger(__name__)
+logger.addHandler(_file_handler)
+logger.setLevel(logging.DEBUG)
 
 
 class ReflowOptunaDrivenOptimizer:
