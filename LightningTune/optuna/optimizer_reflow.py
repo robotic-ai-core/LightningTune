@@ -400,7 +400,8 @@ class ReflowOptunaDrivenOptimizer:
                     # Both have keyboard handlers that conflict with PausibleOptunaOptimizer
                     # Use Lightning's standard progress bar instead (no keyboard monitoring)
                     try:
-                        from lightning_reflow.callbacks.pause import PauseCallback, FlowProgressBarCallback
+                        from lightning_reflow.callbacks.pause import PauseCallback
+                        from lightning_reflow.callbacks.monitoring import FlowProgressBarCallback
                         if hasattr(reflow, 'callbacks') and reflow.callbacks:
                             original_count = len(reflow.callbacks)
                             # Log what callbacks are present
