@@ -100,6 +100,7 @@ class PausibleOptunaOptimizer:
         sampler_name: str = "tpe",
         pruner_name: str = "median",
         save_every_n_trials: int = 10,
+        restart_on_save: bool = False,
         enable_pause: bool = True,
         use_reflow: bool = True,  # Default to Reflow for testability and robust IO
         # New enhanced features
@@ -165,6 +166,7 @@ class PausibleOptunaOptimizer:
         self.sampler_name = sampler_name
         self.pruner_name = pruner_name
         self.save_every_n_trials = save_every_n_trials
+        self.restart_on_save = restart_on_save
         self.enable_pause = enable_pause
         self.use_reflow = use_reflow
         self.test_mode = test_mode
@@ -925,7 +927,15 @@ class PausibleOptunaOptimizer:
                         ):
                             last_saved_trial_count = self.total_trials_completed
                         trials_in_batch = 0
-                    
+
+                        # Exit for auto-restart if enabled
+                        if self.restart_on_save:
+                            logger.info(f"\n🔄 restart_on_save enabled: Exiting after save for process restart")
+                            logger.info(f"   Study saved with {self.total_trials_completed} trials")
+                            logger.info(f"   Resume with: --resume-from {self.args.resume_from if hasattr(self, 'args') else 'latest'}")
+                            import sys
+                            sys.exit(42)  # Exit code 42 signals successful save + restart
+
                     # Check for pause or quit request after trial completes
                     if self._update_pause_from_keyboard():
                         self.should_pause = True
@@ -1014,6 +1024,13 @@ class PausibleOptunaOptimizer:
                 study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
                 if study_was_saved:
                     last_saved_trial_count = self.total_trials_completed
+
+                    # Exit for auto-restart if enabled
+                    if self.restart_on_save:
+                        logger.info(f"\n🔄 restart_on_save enabled: Exiting after pause save for process restart")
+                        logger.info(f"   Study saved with {self.total_trials_completed} trials")
+                        import sys
+                        sys.exit(42)  # Exit code 42 signals successful save + restart
                 else:
                     logger.error("⚠️  Failed to save study for pause - checkpoint may be incomplete")
         elif self.wandb_project and self.total_trials_completed > last_saved_trial_count:

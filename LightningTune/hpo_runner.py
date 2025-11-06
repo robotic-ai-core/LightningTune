@@ -60,6 +60,7 @@ class HPORunner:
         # Align with reference script: allow overriding validation interval via CLI
         'val_interval': {'type': int, 'default': None, 'help': 'Validation check interval (steps)'},
         'save_every': {'type': int, 'default': 10, 'help': 'Save checkpoint every N trials'},
+        'restart_on_save': {'type': bool, 'default': False, 'action': 'store_true', 'help': 'Exit after saving (for auto-restart wrapper)'},
         'wandb': {'type': str, 'default': None, 'help': 'WandB project name'},
         'study_name': {'type': str, 'default': None, 'help': 'Study name'},
         'resume_from': {'type': str, 'default': None, 'help': 'Resume from checkpoint'},
@@ -613,6 +614,7 @@ class HPORunner:
             sampler_name=self.args.sampler,
             pruner_name=self.args.pruner,
             save_every_n_trials=self.args.save_every,
+            restart_on_save=self.args.restart_on_save,
             enable_pause=final_enable_pause,
             use_reflow=use_reflow,
             experiment_dir=self.args.experiment_dir,

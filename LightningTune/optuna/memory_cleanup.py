@@ -58,95 +58,26 @@ def cleanup_trial_resources(trainer=None, datamodule=None):
     """
     Perform cleanup of trial resources to prevent memory accumulation.
 
-    This function should be called after each trial completes to ensure
-    proper memory management, including DataLoader worker cleanup.
+    This function is lightweight since process restart (with --restart-on-save)
+    handles complete memory cleanup. It only cleans up DataLoader workers which
+    can accumulate threads if not explicitly terminated.
 
     Args:
         trainer: Lightning Trainer instance (optional, for DataLoader cleanup)
         datamodule: Lightning DataModule instance (optional, for DataLoader cleanup)
     """
-    logger.info("[MemoryCleanup] Starting aggressive trial cleanup")
+    logger.info("[MemoryCleanup] Cleaning up DataLoader workers")
 
-    # CRITICAL: Clean up DataLoader workers FIRST before garbage collection
+    # CRITICAL: Clean up DataLoader workers to prevent thread accumulation
+    # This is necessary even with process restart because threads can accumulate
+    # within a single process lifetime before restart
     cleanup_dataloader_workers(trainer, datamodule)
 
-    # Clear model and optimizer from trainer to release CUDA memory
-    if trainer is not None:
-        try:
-            # Clear model references
-            if hasattr(trainer, 'model') and trainer.model is not None:
-                # Clear optimizer state (holds gradients and momentum)
-                if hasattr(trainer.model, 'optimizers'):
-                    for opt in trainer.model.optimizers():
-                        opt.zero_grad(set_to_none=True)
-                        opt.state = {}
-                # Clear model parameters from CUDA
-                trainer.model.cpu()
-                del trainer.model
-                logger.debug("[MemoryCleanup] Cleared trainer.model")
-        except Exception as e:
-            logger.warning(f"[MemoryCleanup] Failed to clear model: {e}")
-
-    # CRITICAL: Clear torch.compile cache (huge memory leak source!)
-    try:
-        import torch._dynamo
-        torch._dynamo.reset()
-        logger.info("[MemoryCleanup] Cleared torch.compile cache")
-    except Exception as e:
-        logger.debug(f"[MemoryCleanup] Could not reset torch._dynamo: {e}")
-
-    # Force Python garbage collection to release references
+    # Basic garbage collection
     collected = gc.collect()
     if collected > 0:
         logger.debug(f"[MemoryCleanup] Garbage collector freed {collected} objects")
 
-    # Clear PyTorch CUDA cache if available
+    # Basic CUDA cache clear (lightweight, non-aggressive)
     if torch.cuda.is_available():
-        # More aggressive GPU cleanup
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-
-        # CRITICAL: IPC cleanup for multi-GPU scenarios
-        try:
-            torch.cuda.ipc_collect()
-            logger.debug("[MemoryCleanup] Collected IPC memory handles")
-        except AttributeError:
-            pass  # Not available in older PyTorch
-
-        # Reset peak memory stats to prevent accumulation
-        torch.cuda.reset_peak_memory_stats()
-        torch.cuda.reset_accumulated_memory_stats()
-
-        # Additional empty_cache after synchronize
-        torch.cuda.empty_cache()
-
-    # Clear any matplotlib figures if they exist
-    try:
-        import matplotlib.pyplot as plt
-        plt.close('all')
-    except ImportError:
-        pass
-
-    # Additional garbage collection pass
-    gc.collect()
-    
-    # Log memory usage if psutil is available
-    try:
-        import psutil
-        process = psutil.Process()
-        mem_info = process.memory_info()
-        logger.debug(
-            f"Memory after cleanup: RSS={mem_info.rss/1024/1024:.1f}MB, "
-            f"VMS={mem_info.vms/1024/1024:.1f}MB"
-        )
-        
-        # Also log GPU memory if available
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / 1024 / 1024
-            reserved = torch.cuda.memory_reserved() / 1024 / 1024
-            logger.debug(
-                f"GPU memory after cleanup: Allocated={allocated:.1f}MB, "
-                f"Reserved={reserved:.1f}MB"
-            )
-    except ImportError:
-        pass
