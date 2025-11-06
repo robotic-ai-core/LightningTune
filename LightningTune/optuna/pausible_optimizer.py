@@ -780,11 +780,12 @@ class PausibleOptunaOptimizer:
                 logger.warning("⚠️  Pause functionality disabled")
                 self.keyboard_handler = None
 
-        # Background polling thread removed for stability
-        # Having two threads access terminal I/O (ImprovedKeyboardHandler's monitoring +
-        # our polling thread) causes TTY corruption after 30-60 minutes, crashing tmux.
-        # Trade-off: No immediate feedback when pressing 'p', but stable long runs.
-        # Pause detection still works - checked at trial boundaries from main thread.
+        # Start background polling for immediate schedule/cancel feedback
+        # CRITICAL: Background thread must use logger.info() ONLY, never print()
+        # print() from background thread causes TTY corruption and crashes (commit 06e1b5e)
+        # ab17db7 proved this design works: background thread + logger.info() = stable
+        if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
+            self._start_pause_polling_thread()
 
         # Run trials with periodic saves
         trials_in_batch = 0
@@ -1366,8 +1367,9 @@ class PausibleOptunaOptimizer:
     def _pause_input_loop(self) -> None:
         """Continuously poll keyboard handler for immediate schedule/cancel feedback.
 
-        This runs in a background thread. ImprovedKeyboardHandler proves that background
-        threads CAN safely use print() for terminal output.
+        CRITICAL: This runs in a background thread. DO NOT use print() here!
+        print() from background thread causes TTY corruption (commit 06e1b5e proved this).
+        ab17db7 worked reliably using only logger.info() - we follow that design.
         """
         last_state = self._pause_requested
         while getattr(self, '_polling_active', False):
@@ -1382,9 +1384,8 @@ class PausibleOptunaOptimizer:
                             self._pause_requested = not self._pause_requested
                             if self._pause_requested and not last_state:
                                 msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
-                                print(msg)  # Safe: ImprovedKeyboardHandler proves this works!
-                                logger.info(msg)
-                                # Also log to file
+                                logger.info(msg)  # Logger only - no print()!
+                                # File logging is safe (no TTY interaction)
                                 try:
                                     with open("/tmp/hpo_pause.log", "a") as f:
                                         f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
@@ -1393,8 +1394,7 @@ class PausibleOptunaOptimizer:
                                     pass
                             elif (not self._pause_requested) and last_state:
                                 msg = "\n❌ Pause CANCELLED ('p' pressed again)"
-                                print(msg)  # Safe: ImprovedKeyboardHandler proves this works!
-                                logger.info(msg)
+                                logger.info(msg)  # Logger only - no print()!
                                 try:
                                     with open("/tmp/hpo_pause.log", "a") as f:
                                         f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
@@ -1402,17 +1402,9 @@ class PausibleOptunaOptimizer:
                                 except:
                                     pass
                             last_state = self._pause_requested
-                        elif skey == 'q':
-                            self._quit_after_current = True
-                            msg = "\n🛑 Quit requested ('q' pressed)"
-                            print(msg)
-                            logger.info(msg)
-                        elif raw == "\x03":  # Ctrl+C
-                            self._pause_requested = True
-                            self.should_pause = True
-                            msg = "\n⏸️  Ctrl+C detected - pausing gracefully"
-                            print(msg)
-                            logger.info(msg)
+                        # ab17db7 only handled 'p' in background thread
+                        # 'q' and Ctrl+C are handled by main thread at trial boundaries
+                        # This keeps the background thread simple and avoids print() calls
             except Exception:
                 pass
             time.sleep(0.05)
