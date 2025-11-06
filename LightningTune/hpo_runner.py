@@ -74,7 +74,10 @@ class HPORunner:
     }
 
     # Arguments that should not be persisted
-    NON_PERSISTENT_ARGS = {'resume_from', 'study_name', 'n_trials'}
+    # - resume_from: Should not auto-resume on fresh runs
+    # - study_name: Allow forking studies with new names
+    # Note: n_trials IS persistent so resume continues to original target
+    NON_PERSISTENT_ARGS = {'resume_from', 'study_name'}
 
     def __init__(
         self,
