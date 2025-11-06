@@ -154,13 +154,13 @@ class ReflowOptunaDrivenOptimizer:
         """Reset torch compile state between trials to prevent interference."""
         try:
             import gc
-            
+
             # Reset torch._dynamo state if available
             if hasattr(torch, '_dynamo'):
                 # Clear dynamo cache
                 if hasattr(torch._dynamo, 'reset'):
                     torch._dynamo.reset()
-                
+
                 # Reset config to defaults if modified
                 if hasattr(torch._dynamo, 'config'):
                     # Common settings that might be modified
@@ -171,7 +171,7 @@ class ReflowOptunaDrivenOptimizer:
                     for key, default_value in default_settings.items():
                         if hasattr(torch._dynamo.config, key):
                             setattr(torch._dynamo.config, key, default_value)
-            
+
             # Clear CUDA cache if using GPU
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -180,19 +180,113 @@ class ReflowOptunaDrivenOptimizer:
                 torch.cuda.ipc_collect()
                 # Reset all CUDA RNG states
                 torch.cuda.manual_seed_all(torch.initial_seed())
-            
+
             # Force garbage collection
             gc.collect()
-            
+
             if self.verbose:
                 logger.debug("Reset torch compile state between trials")
-                
+
         except Exception as e:
             logger.debug(f"Could not reset torch compile state: {e}")
-    
+
     def _load_config(self, config_source: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
         """Load configuration from file or dict."""
         return load_config(config_source)
+
+    def _extract_config_args(self, config: Dict[str, Any]) -> tuple:
+        """
+        Extract model and data args from config.
+
+        Handles both flat configs and configs with 'init_args' structure.
+
+        Returns:
+            Tuple of (model_args, data_args)
+        """
+        model_config = config.get('model', {})
+        if 'init_args' in model_config:
+            model_args = model_config['init_args']
+        else:
+            model_args = model_config
+
+        data_config = config.get('data', {})
+        if 'init_args' in data_config:
+            data_args = data_config['init_args']
+        else:
+            data_args = data_config
+
+        return model_args, data_args
+
+    def _extract_metric_value(self, trainer, reflow=None) -> float:
+        """
+        Extract the target metric value from trainer's callback_metrics.
+
+        Args:
+            trainer: Lightning Trainer instance
+            reflow: Optional LightningReflow instance (if using Reflow path)
+
+        Returns:
+            Metric value as float, or default value if metric not found
+        """
+        default_value = float('inf') if self.direction == "minimize" else float('-inf')
+
+        # Handle both Reflow and vanilla Lightning paths
+        if reflow is not None:
+            # Reflow path: check reflow.trainer.callback_metrics
+            if hasattr(reflow, 'trainer') and hasattr(reflow.trainer, 'callback_metrics'):
+                if self.metric in reflow.trainer.callback_metrics:
+                    return reflow.trainer.callback_metrics[self.metric].item()
+        else:
+            # Vanilla path: check trainer.callback_metrics directly
+            if hasattr(trainer, 'callback_metrics') and self.metric in trainer.callback_metrics:
+                return trainer.callback_metrics[self.metric].item()
+
+        logger.warning(f"Metric {self.metric} not found in callback_metrics")
+        return default_value
+
+    def _finalize_wandb(self, wandb_logger, status: str):
+        """
+        Finalize WandB logger with proper cleanup.
+
+        Args:
+            wandb_logger: WandB logger instance
+            status: Trial status ('success', 'pruned', 'failed')
+        """
+        if wandb_logger:
+            from ..utils.wandb_logger import finalize_wandb_logger
+            finalize_wandb_logger(wandb_logger, status)
+
+    def _cleanup_dataloader_workers(self, trial_number: int, trainer=None, datamodule=None, reflow=None, status: str = "completed"):
+        """
+        Clean up DataLoader workers to prevent thread accumulation.
+
+        NOTE: This cleanup is now primarily handled by LightningReflow.fit() finally block
+        and MemoryCleanupCallback. This method is kept for backward compatibility but
+        will be removed in future versions.
+
+        Args:
+            trial_number: Trial number for logging
+            trainer: Lightning Trainer instance
+            datamodule: DataModule instance
+            reflow: Optional LightningReflow instance
+            status: Trial status for logging ('completed', 'pruned', 'failed')
+        """
+        # Skip if no trainer/datamodule/reflow provided
+        if not any([trainer, datamodule, reflow]):
+            return
+
+        try:
+            from .memory_cleanup import cleanup_trial_resources
+
+            # Extract trainer and datamodule from reflow if provided
+            if reflow:
+                trainer = reflow.trainer if hasattr(reflow, 'trainer') else trainer
+                datamodule = reflow.datamodule if hasattr(reflow, 'datamodule') else datamodule
+
+            cleanup_trial_resources(trainer=trainer, datamodule=datamodule)
+            logger.debug(f"Trial {trial_number} ({status}): cleanup_trial_resources completed")
+        except Exception as cleanup_err:
+            logger.warning(f"Trial {trial_number} ({status}): cleanup failed: {cleanup_err}")
     
     def create_objective(self) -> Callable[[optuna.Trial], float]:
         """
@@ -354,19 +448,9 @@ class ReflowOptunaDrivenOptimizer:
             if self.use_reflow:
                 # Use LightningReflow for proper environment setup and compilation
                 try:
-                    # Extract model and data configs
-                    model_config = config.get('model', {})
-                    if 'init_args' in model_config:
-                        model_args = model_config['init_args']
-                    else:
-                        model_args = model_config
-                    
-                    data_config = config.get('data', {})
-                    if 'init_args' in data_config:
-                        data_args = data_config['init_args']
-                    else:
-                        data_args = data_config
-                    
+                    # Extract model and data configs using helper
+                    model_args, data_args = self._extract_config_args(config)
+
                     # Create LightningReflow instance
                     # Note: logger is passed through trainer_defaults
                     reflow = LightningReflow(
@@ -405,14 +489,10 @@ class ReflowOptunaDrivenOptimizer:
 
                     # Run training
                     result = reflow.fit()
-                    
-                    # Get the metric value from trainer
-                    metric_value = float('inf') if self.direction == "minimize" else float('-inf')
-                    if hasattr(reflow.trainer, 'callback_metrics') and self.metric in reflow.trainer.callback_metrics:
-                        metric_value = reflow.trainer.callback_metrics[self.metric].item()
-                    else:
-                        logger.warning(f"Metric {self.metric} not found in callback_metrics")
-                    
+
+                    # Extract metric value using helper
+                    metric_value = self._extract_metric_value(trainer=None, reflow=reflow)
+
                     # IMPORTANT: Let callbacks finish logging before closing WandB
                     if wandb_logger:
                         try:
@@ -422,41 +502,50 @@ class ReflowOptunaDrivenOptimizer:
                                 wandb.run.summary.update({"final_metric": metric_value})
                         except Exception:
                             pass
-                    
+
                     # Clean up torch compile state between trials
                     self._reset_torch_compile_state()
-                    
-                    # Now finalize WandB logger after callbacks have completed
-                    if wandb_logger:
-                        from ..utils.wandb_logger import finalize_wandb_logger
-                        finalize_wandb_logger(wandb_logger, "success")
-                    
-                    # Clean up references to help garbage collection
-                    # DataLoader cleanup is handled by DataModule.teardown()
-                    # gc.collect() is handled by Optuna's gc_after_trial=True
-                    
-                    # Note: We rely on function scope cleanup when objective returns
-                    # The key cleanup (DataLoaders) is handled by DataModule.teardown()
-                    # Additional gc.collect() is done by Optuna's gc_after_trial=True
-                    
+
+                    # Finalize WandB logger using helper
+                    self._finalize_wandb(wandb_logger, "success")
+
+                    # NOTE: DataLoader cleanup is now handled automatically by:
+                    # 1. LightningReflow.fit() finally block (always runs)
+                    # 2. MemoryCleanupCallback on_fit_end hook (if enabled)
+                    # This manual cleanup call is kept for backward compatibility
+                    # but will be removed in future versions.
+                    self._cleanup_dataloader_workers(
+                        trial_number=trial.number,
+                        reflow=reflow,
+                        status="completed"
+                    )
+
                     return metric_value
                     
                 except optuna.TrialPruned:
                     # Clean up torch compile state
                     self._reset_torch_compile_state()
-                    # Clean up WandB before raising
-                    if wandb_logger:
-                        from ..utils.wandb_logger import finalize_wandb_logger
-                        finalize_wandb_logger(wandb_logger, "pruned")
+                    # Clean up WandB using helper
+                    self._finalize_wandb(wandb_logger, "pruned")
+                    # Clean up DataLoader workers using helper
+                    self._cleanup_dataloader_workers(
+                        trial_number=trial.number,
+                        reflow=reflow,
+                        status="pruned"
+                    )
                     raise
                 except Exception as e:
                     logger.error(f"Trial {trial.number} failed with Reflow: {e}")
                     # Clean up torch compile state
                     self._reset_torch_compile_state()
-                    # Clean up WandB before fallback
-                    if wandb_logger:
-                        from ..utils.wandb_logger import finalize_wandb_logger
-                        finalize_wandb_logger(wandb_logger, "failed")
+                    # Clean up WandB using helper
+                    self._finalize_wandb(wandb_logger, "failed")
+                    # Clean up DataLoader workers using helper
+                    self._cleanup_dataloader_workers(
+                        trial_number=trial.number,
+                        reflow=reflow,
+                        status="failed"
+                    )
                     # Optionally fall back to vanilla Lightning
                     if self.verbose:
                         logger.info("Falling back to vanilla Lightning")
@@ -471,31 +560,21 @@ class ReflowOptunaDrivenOptimizer:
     
     def _run_vanilla_lightning(self, config, callbacks, trainer_config, trial, wandb_logger=None):
         """Run training with vanilla Lightning (fallback or when use_reflow=False)."""
-        # Extract model and data configs
-        model_config = config.get('model', {})
-        if 'init_args' in model_config:
-            model_args = model_config['init_args']
-        else:
-            model_args = model_config
-        
-        data_config = config.get('data', {})
-        if 'init_args' in data_config:
-            data_args = data_config['init_args']
-        else:
-            data_args = data_config
-        
+        # Extract model and data configs using helper
+        model_args, data_args = self._extract_config_args(config)
+
         # Create model and datamodule
         model = self.model_class(**model_args)
-        
+
         # Manually trigger compilation if configured (since we're not using Reflow)
         if hasattr(model, '_apply_torch_compile'):
             model._apply_torch_compile()
-        
+
         if self.datamodule_class:
             datamodule = self.datamodule_class(**data_args)
         else:
             datamodule = None
-        
+
         # Create trainer
         # If a ModelCheckpoint is present in callbacks, ensure checkpointing isn't disabled
         try:
@@ -512,48 +591,56 @@ class ReflowOptunaDrivenOptimizer:
             callbacks=callbacks,
             **trainer_config
         )
-        
+
         # Train model
         try:
             if datamodule:
                 trainer.fit(model, datamodule=datamodule)
             else:
                 trainer.fit(model)
-            
-            # Get the metric value
-            metric_value = float('inf') if self.direction == "minimize" else float('-inf')
-            if self.metric in trainer.callback_metrics:
-                metric_value = trainer.callback_metrics[self.metric].item()
-            else:
-                logger.warning(f"Metric {self.metric} not found in callback_metrics")
-            
-            # Finalize WandB logger to ensure proper cleanup
-            if wandb_logger:
-                from ..utils.wandb_logger import finalize_wandb_logger
-                finalize_wandb_logger(wandb_logger, "success")
-            
-            # Clean up references to help garbage collection
-            # DataLoader cleanup is handled by DataModule.teardown()
-            # gc.collect() is handled by Optuna's gc_after_trial=True
-            
-            # Note: We rely on function scope cleanup when objective returns
-            # The key cleanup (DataLoaders) is handled by DataModule.teardown()
-            # Additional gc.collect() is done by Optuna's gc_after_trial=True
-            
+
+            # Extract metric value using helper
+            metric_value = self._extract_metric_value(trainer=trainer, reflow=None)
+
+            # Finalize WandB logger using helper
+            self._finalize_wandb(wandb_logger, "success")
+
+            # NOTE: DataLoader cleanup is now handled automatically by:
+            # 1. LightningReflow.fit() finally block (for Reflow path)
+            # 2. MemoryCleanupCallback on_fit_end hook (if enabled)
+            # This manual cleanup call is kept for backward compatibility
+            # but will be removed in future versions.
+            self._cleanup_dataloader_workers(
+                trial_number=trial.number,
+                trainer=trainer,
+                datamodule=datamodule,
+                status="completed"
+            )
+
             return metric_value
-            
+
         except optuna.TrialPruned:
-            # Clean up WandB before raising
-            if wandb_logger:
-                from ..utils.wandb_logger import finalize_wandb_logger
-                finalize_wandb_logger(wandb_logger, "pruned")
+            # Clean up WandB using helper
+            self._finalize_wandb(wandb_logger, "pruned")
+            # Clean up DataLoader workers using helper
+            self._cleanup_dataloader_workers(
+                trial_number=trial.number,
+                trainer=trainer,
+                datamodule=datamodule,
+                status="pruned"
+            )
             raise
         except Exception as e:
             logger.error(f"Trial {trial.number} failed: {e}")
-            # Clean up WandB on failure
-            if wandb_logger:
-                from ..utils.wandb_logger import finalize_wandb_logger
-                finalize_wandb_logger(wandb_logger, "failed")
+            # Clean up WandB using helper
+            self._finalize_wandb(wandb_logger, "failed")
+            # Clean up DataLoader workers using helper
+            self._cleanup_dataloader_workers(
+                trial_number=trial.number,
+                trainer=trainer,
+                datamodule=datamodule,
+                status="failed"
+            )
             return float('inf') if self.direction == "minimize" else float('-inf')
     
     def optimize(self) -> optuna.Study:

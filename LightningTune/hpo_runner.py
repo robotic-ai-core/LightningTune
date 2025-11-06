@@ -644,12 +644,26 @@ class HPORunner:
 
         Args:
             **kwargs: Arguments that would normally come from CLI
+                Special handling for 'config_overrides': dict of dotted-path overrides
+                e.g., {"data.init_args.num_workers": 4}
 
         Returns:
             Optuna study object
         """
+        # Extract config_overrides dict before converting to CLI
+        config_overrides = kwargs.pop('config_overrides', None)
+
         # Convert kwargs to CLI-style arguments
         argv = []
+
+        # First, convert config_overrides dict to individual dot-notation CLI args
+        # This preserves the dotted paths like "data.init_args.num_workers"
+        if config_overrides and isinstance(config_overrides, dict):
+            for key, value in config_overrides.items():
+                # Add as --key value (dot notation is preserved in key)
+                argv.extend([f'--{key}', str(value)])
+
+        # Then convert remaining kwargs to CLI-style arguments
         for key, value in kwargs.items():
             if value is not None:
                 cli_key = '--' + key.replace('_', '-')
