@@ -65,19 +65,53 @@ def cleanup_trial_resources(trainer=None, datamodule=None):
         trainer: Lightning Trainer instance (optional, for DataLoader cleanup)
         datamodule: Lightning DataModule instance (optional, for DataLoader cleanup)
     """
+    logger.info("[MemoryCleanup] Starting aggressive trial cleanup")
+
     # CRITICAL: Clean up DataLoader workers FIRST before garbage collection
     cleanup_dataloader_workers(trainer, datamodule)
+
+    # Clear model and optimizer from trainer to release CUDA memory
+    if trainer is not None:
+        try:
+            # Clear model references
+            if hasattr(trainer, 'model') and trainer.model is not None:
+                # Clear optimizer state (holds gradients and momentum)
+                if hasattr(trainer.model, 'optimizers'):
+                    for opt in trainer.model.optimizers():
+                        opt.zero_grad(set_to_none=True)
+                        opt.state = {}
+                # Clear model parameters from CUDA
+                trainer.model.cpu()
+                del trainer.model
+                logger.debug("[MemoryCleanup] Cleared trainer.model")
+        except Exception as e:
+            logger.warning(f"[MemoryCleanup] Failed to clear model: {e}")
+
+    # CRITICAL: Clear torch.compile cache (huge memory leak source!)
+    try:
+        import torch._dynamo
+        torch._dynamo.reset()
+        logger.info("[MemoryCleanup] Cleared torch.compile cache")
+    except Exception as e:
+        logger.debug(f"[MemoryCleanup] Could not reset torch._dynamo: {e}")
 
     # Force Python garbage collection to release references
     collected = gc.collect()
     if collected > 0:
-        logger.debug(f"Garbage collector freed {collected} objects")
+        logger.debug(f"[MemoryCleanup] Garbage collector freed {collected} objects")
 
     # Clear PyTorch CUDA cache if available
     if torch.cuda.is_available():
         # More aggressive GPU cleanup
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
+
+        # CRITICAL: IPC cleanup for multi-GPU scenarios
+        try:
+            torch.cuda.ipc_collect()
+            logger.debug("[MemoryCleanup] Collected IPC memory handles")
+        except AttributeError:
+            pass  # Not available in older PyTorch
 
         # Reset peak memory stats to prevent accumulation
         torch.cuda.reset_peak_memory_stats()
