@@ -28,16 +28,6 @@ from lightning import LightningModule
 from lightning.pytorch.callbacks import Callback
 
 from .optimizer import OptunaDrivenOptimizer
-
-# Setup diagnostic file logging
-_diag_log_file = "/tmp/hpo_diagnostic.log"
-_file_handler = logging.FileHandler(_diag_log_file, mode='a')
-_file_handler.setLevel(logging.DEBUG)
-_file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-_module_logger = logging.getLogger(__name__)
-_module_logger.addHandler(_file_handler)
-_module_logger.setLevel(logging.DEBUG)  # Ensure logger level allows DEBUG/INFO
-_file_handler.flush()  # Force immediate flush
 from .optimizer_reflow import ReflowOptunaDrivenOptimizer
 from .factories import create_sampler, create_pruner
 from ..persistence import (
@@ -67,8 +57,6 @@ except Exception:  # Fallback if Reflow is not available
     create_improved_keyboard_handler = None  # type: ignore
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Ensure logger level allows DEBUG/INFO
-logger.info(f"🔧 [DIAG] PausibleOptunaOptimizer module loaded, logging to {_diag_log_file}")
 
 
 class PausibleOptunaOptimizer:
@@ -162,12 +150,7 @@ class PausibleOptunaOptimizer:
             logger.info(f"📑 Merged base and override configs")
         else:
             self.base_config = base_config
-
-        # Log initialization to diagnostic file
-        logger.info(f"🔧 [DIAG] ========== PausibleOptunaOptimizer.__init__() START ==========")
-        logger.info(f"🔧 [DIAG] Diagnostic logs: {_diag_log_file}")
-        logger.info(f"🔧 [DIAG] enable_pause={enable_pause}, test_mode={test_mode}")
-
+            
         self.search_space = search_space
         self.model_class = model_class
         self.datamodule_class = datamodule_class
@@ -236,14 +219,10 @@ class PausibleOptunaOptimizer:
         if enable_pause and os.environ.get("LT_CHILD", "0") != "1":
             if create_improved_keyboard_handler is not None:
                 self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
-                logger.info(f"🔧 [DIAG] PausibleOptunaOptimizer: Created keyboard handler (type: {type(self.keyboard_handler).__name__})")
             else:
                 self.keyboard_handler = None
-                logger.warning("🔧 [DIAG] PausibleOptunaOptimizer: keyboard handler creation failed (create_improved_keyboard_handler not available)")
-
-        logger.info(f"🔧 [DIAG] ========== PausibleOptunaOptimizer.__init__() COMPLETE ==========")
-
-
+    
+    
     def _verify_study_integrity(self, study: optuna.Study) -> tuple[bool, int, str]:
         """
         Verify study integrity and count finished trials.
@@ -425,10 +404,6 @@ class PausibleOptunaOptimizer:
         Returns:
             Optuna study with results
         """
-        logger.info(f"🔧 [DIAG] ========== optimize() START ==========")
-        logger.info(f"🔧 [DIAG] n_trials={n_trials}, resume_from={resume_from}")
-        logger.info(f"🔧 [DIAG] Diagnostic log file: {_diag_log_file}")
-
         # Handle automatic argument persistence
         if self.persist_args and self.args:
             args_dict = self._extract_persistable_args()
@@ -583,27 +558,18 @@ class PausibleOptunaOptimizer:
                 del optimizer_config_overrides['n_trials']
 
             # Display resume information (simplified for Lightning progress bar compatibility)
-            remaining = n_trials - self.total_trials_completed
-            progress_pct = (self.total_trials_completed / n_trials * 100) if n_trials > 0 else 0
+            logger.info(f"\n📂 Resuming: {self.total_trials_completed}/{n_trials} trials complete")
 
-            # Use print() for immediate visibility
-            print("\n" + "="*60)
-            print(f"📂 RESUMING STUDY: {self.study_name}")
-            print(f"   Progress: {self.total_trials_completed}/{n_trials} trials complete ({progress_pct:.1f}%)")
-            print(f"   Remaining: {remaining} trials to run")
-            if n_trials_extended:
-                print(f"   Extending trials: {saved_n_trials} → {n_trials}")
-            print("="*60 + "\n")
-
-            # Also log for consistency
-            logger.info(f"📂 Resuming: {self.total_trials_completed}/{n_trials} trials complete ({progress_pct:.1f}%)")
+            # Show n_trials extension if applicable
             if n_trials_extended:
                 logger.info(f"   Extending trials: {saved_n_trials} → {n_trials}")
-
+            
             # Store merged overrides for future saves (includes n_trials if extended)
             self.persistent_config_overrides = merged_config_overrides
             # Use the version without n_trials for the optimizer
             config_overrides = optimizer_config_overrides
+            
+            logger.info(f"{'='*60}")
             
             # Verify study integrity - count finished trials (COMPLETE + PRUNED)
             finished_count = len([t for t in study.trials 
@@ -685,22 +651,13 @@ class PausibleOptunaOptimizer:
         try:
             if self.use_reflow:
                 is_type = isinstance(self.model_class, type)
-                logger.info(f"🔧 [DIAG] Reflow check: model_class={self.model_class}, is_type={is_type}")
                 from lightning.pytorch import LightningModule as _LM
-                if is_type:
-                    is_subclass = issubclass(self.model_class, _LM)
-                    logger.info(f"🔧 [DIAG] Reflow check: issubclass(model_class, LightningModule)={is_subclass}")
                 if (not is_type) or (not issubclass(self.model_class, _LM)):
                     self.use_reflow = False
                     logger.info("⚠️  Disabling Reflow: model_class is not a LightningModule type")
-                else:
-                    logger.info(f"✅ Using Reflow: model_class is a LightningModule")
-        except Exception as e:
-            logger.warning(f"⚠️  Reflow check failed with exception: {e}, disabling Reflow")
-            self.use_reflow = False
+        except Exception:
+            pass
         OptimizerClass = ReflowOptunaDrivenOptimizer if self.use_reflow else OptunaDrivenOptimizer
-        logger.info(f"🔧 [DIAG] Selected optimizer class: {OptimizerClass.__name__}")
-
         # Merge persistent overrides and runtime-only overrides for the optimizer
         _config_overrides_for_optimizer = dict(config_overrides or {})
         if runtime_overrides:
@@ -708,10 +665,8 @@ class PausibleOptunaOptimizer:
 
         pre_injected_optimizer = getattr(self, 'underlying_optimizer', None)
         if pre_injected_optimizer is not None:
-            logger.info(f"🔧 [DIAG] Using pre-injected optimizer: {type(pre_injected_optimizer).__name__}")
             optimizer = pre_injected_optimizer
         else:
-            logger.info(f"🔧 [DIAG] Instantiating new {OptimizerClass.__name__}...")
             optimizer = OptimizerClass(
                 base_config=self.base_config,
                 search_space=self.search_space,
@@ -739,22 +694,16 @@ class PausibleOptunaOptimizer:
             custom_obj_factory = getattr(self, 'create_objective', None)
             objective = None
             if callable(custom_obj_factory):
-                logger.info(f"🔧 [DIAG] Found custom create_objective, calling it...")
                 try:
                     candidate = custom_obj_factory()
                     if callable(candidate):
                         objective = candidate
-                        logger.info(f"🔧 [DIAG] Got objective from custom create_objective")
-                except Exception as e:
-                    logger.info(f"🔧 [DIAG] Custom create_objective failed: {e}")
+                except Exception:
                     objective = None
             if objective is None:
                 under = getattr(self, 'underlying_optimizer', optimizer)
-                logger.info(f"🔧 [DIAG] Calling create_objective on underlying optimizer: {type(under).__name__}")
                 objective = under.create_objective()
-                logger.info(f"🔧 [DIAG] Got objective function from {type(under).__name__}")
-        except Exception as e:
-            logger.warning(f"⚠️  [DIAG] Exception getting objective: {e}, falling back to optimizer.create_objective()")
+        except Exception:
             objective = optimizer.create_objective()
         
         # Start keyboard monitoring if available
@@ -768,25 +717,21 @@ class PausibleOptunaOptimizer:
                         logger.warning("⚠️  Pause functionality will be disabled")
                         self.keyboard_handler = None
                     else:
-                        logger.info(f"🔧 [DIAG] Starting keyboard monitoring (handler: {type(self.keyboard_handler).__name__})")
                         self.keyboard_handler.start_monitoring()
                         logger.info("⌨️  Keyboard monitoring active - press 'p' to pause between trials")
                         logger.info("   Pause events will be logged to /tmp/hpo_pause.log")
                 else:
-                    logger.info(f"🔧 [DIAG] Starting keyboard monitoring (handler: {type(self.keyboard_handler).__name__}, no is_available check)")
                     self.keyboard_handler.start_monitoring()
             except Exception as e:
                 logger.warning(f"⚠️  Keyboard monitoring failed to start: {e}")
                 logger.warning("⚠️  Pause functionality disabled")
                 self.keyboard_handler = None
-
         # Start background polling for immediate schedule/cancel feedback
-        # CRITICAL: Background thread must use logger.info() ONLY, never print()
-        # print() from background thread causes TTY corruption and crashes (commit 06e1b5e)
-        # ab17db7 proved this design works: background thread + logger.info() = stable
+        self._pause_poll_thread = None
+        self._polling_active = False
         if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
             self._start_pause_polling_thread()
-
+        
         # Run trials with periodic saves
         trials_in_batch = 0
         last_saved_trial_count = self.total_trials_completed
@@ -801,7 +746,7 @@ class PausibleOptunaOptimizer:
             if self._update_pause_from_keyboard():
                 self.should_pause = True
                 msg = "\n⏸️  Executing pause at trial boundary..."
-                # Use logger only for consistency; file logging survives tmux crashes
+                print(msg)  # Print directly so it shows up even with progress bar
                 logger.info(msg)
                 # Log to file for visibility
                 try:
@@ -818,12 +763,10 @@ class PausibleOptunaOptimizer:
                 # Show trial start (simplified for Lightning progress bar compatibility)
                 trial_number = self.total_trials_completed + 1
                 logger.info(f"📊 Trial {trial_number}/{n_trials}")
-
+                
                 # Run single trial with automatic garbage collection
                 # gc_after_trial=True ensures memory is cleaned between trials
-                logger.info(f"🔧 [DIAG] About to call study.optimize with objective type: {type(objective)}")
                 study.optimize(objective, n_trials=1, show_progress_bar=False, gc_after_trial=True)
-                logger.info(f"🔧 [DIAG] study.optimize completed for trial {trial_number}")
                 
                 # Additional memory cleanup to prevent accumulation
                 from .memory_cleanup import cleanup_trial_resources
@@ -944,16 +887,14 @@ class PausibleOptunaOptimizer:
         
         # Stop keyboard monitoring and clear pause state
         if self.keyboard_handler and hasattr(self.keyboard_handler, 'stop_monitoring'):
-            logger.info(f"🔧 [DIAG] Stopping keyboard monitoring (handler: {type(self.keyboard_handler).__name__})")
             try:
                 self.keyboard_handler.stop_monitoring()
-                logger.info(f"🔧 [DIAG] Keyboard monitoring stopped successfully")
-            except Exception as e:
-                logger.warning(f"⚠️  [DIAG] Error stopping keyboard monitoring: {e}")
+            except Exception:
+                pass
         self._pause_requested = False
         # Stop background polling thread
         self._stop_pause_polling_thread()
-
+        
         # Handle pause save or final save
         study_was_saved = False
         if self.should_pause:
@@ -1028,9 +969,7 @@ class PausibleOptunaOptimizer:
         except ValueError:
             # No completed trials yet
             logger.info("No trials completed successfully yet.")
-
-        logger.info(f"🔧 [DIAG] ========== optimize() COMPLETE ==========")
-
+        
         return study
 
     # --- Internal helpers -------------------------------------------------
@@ -1123,11 +1062,9 @@ class PausibleOptunaOptimizer:
 
         Returns True if pause is currently requested.
         """
-        # If background polling is active, just return current flag (polling thread handles keys)
+        # If background polling is active, just return current flag
         if getattr(self, '_polling_active', False):
             return self._pause_requested
-
-        # Otherwise check keyboard from main thread
         try:
             if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
                 key = self.keyboard_handler.get_key()
@@ -1138,40 +1075,18 @@ class PausibleOptunaOptimizer:
                     if skey == 'p':
                         self._pause_requested = not self._pause_requested
                         if self._pause_requested:
-                            msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
-                            print(msg)  # Safe: main thread, visible immediately
-                            logger.info(msg)
-                            # Also log to file for visibility
-                            try:
-                                with open("/tmp/hpo_pause.log", "a") as f:
-                                    f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
-                                    f.flush()
-                            except:
-                                pass
+                            logger.info("\n⏸️  Pause SCHEDULED ('p' pressed)")
                         else:
-                            msg = "\n❌ Pause CANCELLED ('p' pressed again)"
-                            print(msg)  # Safe: main thread, visible immediately
-                            logger.info(msg)
-                            # Also log to file for visibility
-                            try:
-                                with open("/tmp/hpo_pause.log", "a") as f:
-                                    f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
-                                    f.flush()
-                            except:
-                                pass
+                            logger.info("\n❌ Pause CANCELLED ('p' pressed again)")
                     elif skey == 'q':
                         # Request quit after current trial ends
                         self._quit_after_current = True
-                        msg = "\n🛑 Quit requested ('q' pressed). Will stop after current trial."
-                        print(msg)  # Safe: main thread, visible immediately
-                        logger.info(msg)
+                        logger.info("\n🛑 Quit requested ('q' pressed). Will stop after current trial.")
                     elif raw == "\x03":  # Ctrl+C in cbreak mode
                         # Treat as a graceful pause request so we save state
                         self._pause_requested = True
                         self.should_pause = True
-                        msg = "\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary..."
-                        print(msg)  # Safe: main thread, visible immediately
-                        logger.info(msg)
+                        logger.info("\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary...")
         except Exception:
             pass
         return self._pause_requested
@@ -1339,38 +1254,26 @@ class PausibleOptunaOptimizer:
             return None
 
     def _start_pause_polling_thread(self) -> None:
-        """Start a lightweight background thread to poll keyboard input."""
+        """Start a lightweight background thread to poll keyboard input for 'p'."""
         if self._pause_poll_thread and self._pause_poll_thread.is_alive():
-            logger.info(f"🔧 [DIAG] Pause polling thread already running")
             return
-        logger.info(f"🔧 [DIAG] Starting pause polling thread")
         self._polling_active = True
-        self._pause_poll_thread = threading.Thread(target=self._pause_input_loop, daemon=True)
+        self._pause_poll_thread = threading.Thread(target=self._pause_input_loop, daemon=True, name="PauseInputWatcher")
         self._pause_poll_thread.start()
-        logger.info(f"🔧 [DIAG] Pause polling thread started")
 
     def _stop_pause_polling_thread(self) -> None:
         """Stop the background polling thread if running."""
-        logger.info(f"🔧 [DIAG] Stopping pause polling thread")
         if getattr(self, '_polling_active', False):
             self._polling_active = False
         t = getattr(self, '_pause_poll_thread', None)
         if t and t.is_alive():
-            logger.info(f"🔧 [DIAG] Waiting for thread to exit...")
             try:
                 t.join(timeout=1.0)
-                if not t.is_alive():
-                    logger.info(f"🔧 [DIAG] Pause polling thread stopped successfully")
-            except Exception as e:
-                logger.warning(f"⚠️  [DIAG] Error stopping pause thread: {e}")
+            except Exception:
+                pass
 
     def _pause_input_loop(self) -> None:
-        """Continuously poll keyboard handler for immediate schedule/cancel feedback.
-
-        CRITICAL: This runs in a background thread. DO NOT use print() here!
-        print() from background thread causes TTY corruption (commit 06e1b5e proved this).
-        ab17db7 worked reliably using only logger.info() - we follow that design.
-        """
+        """Continuously poll keyboard handler for immediate schedule/cancel feedback."""
         last_state = self._pause_requested
         while getattr(self, '_polling_active', False):
             try:
@@ -1384,8 +1287,9 @@ class PausibleOptunaOptimizer:
                             self._pause_requested = not self._pause_requested
                             if self._pause_requested and not last_state:
                                 msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
-                                logger.info(msg)  # Logger only - no print()!
-                                # File logging is safe (no TTY interaction)
+                                print(msg)  # Print directly so it shows up even with progress bar
+                                logger.info(msg)
+                                # Also log to file for visibility (progress bar may hide terminal output)
                                 try:
                                     with open("/tmp/hpo_pause.log", "a") as f:
                                         f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
@@ -1394,7 +1298,8 @@ class PausibleOptunaOptimizer:
                                     pass
                             elif (not self._pause_requested) and last_state:
                                 msg = "\n❌ Pause CANCELLED ('p' pressed again)"
-                                logger.info(msg)  # Logger only - no print()!
+                                print(msg)  # Print directly so it shows up even with progress bar
+                                logger.info(msg)
                                 try:
                                     with open("/tmp/hpo_pause.log", "a") as f:
                                         f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
@@ -1402,9 +1307,18 @@ class PausibleOptunaOptimizer:
                                 except:
                                     pass
                             last_state = self._pause_requested
-                        # ab17db7 only handled 'p' in background thread
-                        # 'q' and Ctrl+C are handled by main thread at trial boundaries
-                        # This keeps the background thread simple and avoids print() calls
+                        elif skey == 'q':
+                            self._quit_after_current = True
+                            msg = "\n🛑 Quit requested ('q' pressed). Will stop after current trial."
+                            print(msg)  # Print directly so it shows up even with progress bar
+                            logger.info(msg)
+                        elif raw == "\x03":  # Ctrl+C in cbreak mode
+                            self._pause_requested = True
+                            self.should_pause = True
+                            msg = "\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary..."
+                            print(msg)  # Print directly so it shows up even with progress bar
+                            logger.info(msg)
             except Exception:
+                # Ignore read errors
                 pass
             time.sleep(0.05)
