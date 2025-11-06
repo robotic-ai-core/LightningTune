@@ -34,14 +34,7 @@ from .search_space import OptunaSearchSpace
 from .callbacks import OptunaPruningCallback
 from ..utils.config_utils import apply_dotted_updates, load_config
 
-# Setup diagnostic file logging (shared with pausible_optimizer)
-_diag_log_file = "/tmp/hpo_diagnostic.log"
-_file_handler = logging.FileHandler(_diag_log_file, mode='a')
-_file_handler.setLevel(logging.DEBUG)
-_file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
 logger = logging.getLogger(__name__)
-logger.addHandler(_file_handler)
-logger.setLevel(logging.DEBUG)
 
 
 class ReflowOptunaDrivenOptimizer:
@@ -209,7 +202,6 @@ class ReflowOptunaDrivenOptimizer:
             Objective function that takes a trial and returns a metric value
         """
         def objective(trial: optuna.Trial) -> float:
-            logger.info(f"🔧 [DIAG] ReflowOptunaDrivenOptimizer.objective() called for trial {trial.number}")
             # Start with base config (defensive for None)
             config = (self.base_config or {}).copy()
             
@@ -377,7 +369,6 @@ class ReflowOptunaDrivenOptimizer:
                     
                     # Create LightningReflow instance
                     # Note: logger is passed through trainer_defaults
-                    logger.info(f"🔧 [DIAG] About to instantiate LightningReflow with disable_pause_callback=True")
                     reflow = LightningReflow(
                         model_class=self.model_class,
                         datamodule_class=self.datamodule_class,
@@ -396,34 +387,21 @@ class ReflowOptunaDrivenOptimizer:
                         disable_pause_callback=True  # HPO manages pause at trial boundaries
                     )
 
-                    # CRITICAL: Remove PauseCallback AND FlowProgressBarCallback
-                    # Both have keyboard handlers that conflict with PausibleOptunaOptimizer
-                    # Use Lightning's standard progress bar instead (no keyboard monitoring)
+                    # CRITICAL: Remove PauseCallback from callbacks if it was added
+                    # Even with disable_pause_callback=True, the callback might still be added
+                    # We keep FlowProgressBarCallback for visual feedback, only remove PauseCallback
                     try:
                         from lightning_reflow.callbacks.pause import PauseCallback
-                        from lightning_reflow.callbacks.monitoring import FlowProgressBarCallback
                         if hasattr(reflow, 'callbacks') and reflow.callbacks:
                             original_count = len(reflow.callbacks)
-                            # Log what callbacks are present
-                            callback_types = [type(cb).__name__ for cb in reflow.callbacks]
-                            logger.info(f"🔧 [DIAG] Reflow callbacks before removal: {callback_types}")
-
                             reflow.callbacks = [
                                 cb for cb in reflow.callbacks
-                                if not isinstance(cb, (PauseCallback, FlowProgressBarCallback))
+                                if not isinstance(cb, PauseCallback)
                             ]
-
                             if len(reflow.callbacks) < original_count:
-                                removed = original_count - len(reflow.callbacks)
-                                logger.info(f"🚫 Removed {removed} Reflow callback(s) for HPO (using Lightning's standard progress bar)")
-                            else:
-                                logger.info(f"✅ No conflicting Reflow callbacks found (FlowProgressBarCallback not present)")
-                        else:
-                            logger.info(f"🔧 [DIAG] Reflow has no callbacks to check")
-                    except ImportError as e:
-                        logger.info(f"🔧 [DIAG] Could not import Reflow callbacks: {e}")
-                    except Exception as e:
-                        logger.warning(f"⚠️  Error checking Reflow callbacks: {e}")
+                                logger.info(f"🚫 Removed {original_count - len(reflow.callbacks)} PauseCallback(s) for HPO")
+                    except ImportError:
+                        pass  # Callbacks not available
 
                     # Run training
                     result = reflow.fit()
