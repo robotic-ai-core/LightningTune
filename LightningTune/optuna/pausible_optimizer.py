@@ -53,8 +53,14 @@ try:
     from lightning_reflow.callbacks.pause.improved_keyboard_handler import (
         create_improved_keyboard_handler,
     )
+    # Import KeyboardHandlerService (modern approach, eliminates duplicate threads)
+    from lightning_reflow.services import KeyboardHandlerService, KeyboardHandlerStrategy
+    HAS_KEYBOARD_SERVICE = True
 except Exception:  # Fallback if Reflow is not available
     create_improved_keyboard_handler = None  # type: ignore
+    KeyboardHandlerService = None  # type: ignore
+    KeyboardHandlerStrategy = None  # type: ignore
+    HAS_KEYBOARD_SERVICE = False
 
 logger = logging.getLogger(__name__)
 
@@ -210,19 +216,91 @@ class PausibleOptunaOptimizer:
 
         # Setup keyboard handler for 'p' key pause (robust terminal handling)
         self.keyboard_handler = None
+        self.keyboard_service = None  # KeyboardHandlerService (modern approach)
+        self._use_keyboard_service = False  # Flag to determine which handler is active
         # Backward-compatibility shim for tests (deprecated, will be removed)
         self.keyboard_monitor = None
         self._pause_requested: bool = False
-        # Initialize polling thread attributes
+        self._pause_lock = threading.Lock()  # Thread-safe state mutation for keyboard callbacks
+        # Initialize polling thread attributes (DEPRECATED - will be removed)
         self._pause_poll_thread = None
         self._polling_active = False
         if enable_pause and os.environ.get("LT_CHILD", "0") != "1":
-            if create_improved_keyboard_handler is not None:
+            # Try KeyboardHandlerService first (preferred, eliminates duplicate threads)
+            if HAS_KEYBOARD_SERVICE and KeyboardHandlerService is not None:
+                try:
+                    self.keyboard_service = KeyboardHandlerService.get_instance(
+                        strategy=KeyboardHandlerStrategy.IMPROVED_MODE,
+                        debounce_interval=0.3
+                    )
+                    if self.keyboard_service.is_available():
+                        self._use_keyboard_service = True
+                        logger.info("✅ Using KeyboardHandlerService for HPO pause (eliminates duplicate threads)")
+                    else:
+                        # Fallback to ImprovedKeyboardHandler
+                        if create_improved_keyboard_handler is not None:
+                            self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
+                            logger.warning("⚠️  Falling back to ImprovedKeyboardHandler (KeyboardHandlerService not available)")
+                except Exception as e:
+                    logger.warning(f"KeyboardHandlerService failed ({e}), falling back to ImprovedKeyboardHandler")
+                    if create_improved_keyboard_handler is not None:
+                        self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
+            elif create_improved_keyboard_handler is not None:
                 self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
+                logger.warning("⚠️  KeyboardHandlerService not available, using ImprovedKeyboardHandler")
             else:
                 self.keyboard_handler = None
     
-    
+
+    def _on_key_press(self, key: str):
+        """Callback from KeyboardHandlerService (invoked from background thread).
+
+        This method is thread-safe using self._pause_lock to protect state mutations.
+        """
+        skey = key.lower()
+
+        if skey == 'p':
+            # Toggle pause state (thread-safe)
+            with self._pause_lock:
+                last_state = self._pause_requested
+                self._pause_requested = not self._pause_requested
+                current_state = self._pause_requested
+
+            # Print feedback (outside lock)
+            if current_state and not last_state:
+                msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
+                print(msg)
+                logger.info(msg)
+                try:
+                    with open("/tmp/hpo_pause.log", "a") as f:
+                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
+                        f.flush()
+                except:
+                    pass
+            elif not current_state and last_state:
+                msg = "\n❌ Pause CANCELLED ('p' pressed again)"
+                print(msg)
+                logger.info(msg)
+                try:
+                    with open("/tmp/hpo_pause.log", "a") as f:
+                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
+                        f.flush()
+                except:
+                    pass
+        elif skey == 'q':
+            with self._pause_lock:
+                self._quit_after_current = True
+            msg = "\n🛑 Quit requested ('q' pressed). Will stop after current trial."
+            print(msg)
+            logger.info(msg)
+        elif key == "\x03":  # Ctrl+C in cbreak mode
+            with self._pause_lock:
+                self._pause_requested = True
+                self.should_pause = True
+            msg = "\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary..."
+            print(msg)
+            logger.info(msg)
+
     def _verify_study_integrity(self, study: optuna.Study) -> tuple[bool, int, str]:
         """
         Verify study integrity and count finished trials.
@@ -707,7 +785,20 @@ class PausibleOptunaOptimizer:
             objective = optimizer.create_objective()
         
         # Start keyboard monitoring if available
-        if self.keyboard_handler and hasattr(self.keyboard_handler, 'start_monitoring'):
+        if self._use_keyboard_service and self.keyboard_service:
+            # Register callback with KeyboardHandlerService (MODERN APPROACH - no polling thread!)
+            try:
+                self.keyboard_service.register_subscriber("hpo_pause", self._on_key_press)
+                logger.info("⌨️  Keyboard monitoring active via KeyboardHandlerService - press 'p' to pause between trials")
+                logger.info("   ✅ Using centralized service (eliminates duplicate threads)")
+                logger.info("   Pause events will be logged to /tmp/hpo_pause.log")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to register with KeyboardHandlerService: {e}")
+                logger.warning("⚠️  Pause functionality disabled")
+                self.keyboard_service = None
+                self._use_keyboard_service = False
+        elif self.keyboard_handler and hasattr(self.keyboard_handler, 'start_monitoring'):
+            # Legacy ImprovedKeyboardHandler path (for backward compatibility)
             try:
                 # Check if it's actually available before starting
                 if hasattr(self.keyboard_handler, 'is_available'):
@@ -726,11 +817,14 @@ class PausibleOptunaOptimizer:
                 logger.warning(f"⚠️  Keyboard monitoring failed to start: {e}")
                 logger.warning("⚠️  Pause functionality disabled")
                 self.keyboard_handler = None
-        # Start background polling for immediate schedule/cancel feedback
-        self._pause_poll_thread = None
-        self._polling_active = False
-        if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
-            self._start_pause_polling_thread()
+            # Start background polling for immediate schedule/cancel feedback
+            # NOTE: This polling thread is ONLY used with legacy ImprovedKeyboardHandler
+            # KeyboardHandlerService uses callbacks - no polling thread needed!
+            self._pause_poll_thread = None
+            self._polling_active = False
+            if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
+                self._start_pause_polling_thread()
+                logger.warning("⚠️  Using legacy polling thread (upgrade to KeyboardHandlerService to eliminate)")
         
         # Run trials with periodic saves
         trials_in_batch = 0
@@ -861,7 +955,13 @@ class PausibleOptunaOptimizer:
                     
             except KeyboardInterrupt:
                 # Clean up keyboard handler before terminating
-                if self.keyboard_handler and hasattr(self.keyboard_handler, 'stop_monitoring'):
+                if self._use_keyboard_service and self.keyboard_service:
+                    try:
+                        self.keyboard_service.unregister_subscriber("hpo_pause")
+                        logger.info("✅ Unregistered from KeyboardHandlerService")
+                    except Exception:
+                        pass
+                elif self.keyboard_handler and hasattr(self.keyboard_handler, 'stop_monitoring'):
                     try:
                         self.keyboard_handler.stop_monitoring()
                     except Exception:
@@ -886,14 +986,22 @@ class PausibleOptunaOptimizer:
                 continue
         
         # Stop keyboard monitoring and clear pause state
-        if self.keyboard_handler and hasattr(self.keyboard_handler, 'stop_monitoring'):
+        if self._use_keyboard_service and self.keyboard_service:
+            # Unregister from KeyboardHandlerService
+            try:
+                self.keyboard_service.unregister_subscriber("hpo_pause")
+                logger.info("✅ Unregistered from KeyboardHandlerService")
+            except Exception:
+                pass
+        elif self.keyboard_handler and hasattr(self.keyboard_handler, 'stop_monitoring'):
+            # Stop legacy ImprovedKeyboardHandler
             try:
                 self.keyboard_handler.stop_monitoring()
             except Exception:
                 pass
+            # Stop background polling thread (only used with legacy handler)
+            self._stop_pause_polling_thread()
         self._pause_requested = False
-        # Stop background polling thread
-        self._stop_pause_polling_thread()
         
         # Handle pause save or final save
         study_was_saved = False
@@ -1062,6 +1170,11 @@ class PausibleOptunaOptimizer:
 
         Returns True if pause is currently requested.
         """
+        # If using KeyboardHandlerService, state is managed by callback (thread-safe)
+        if self._use_keyboard_service:
+            with self._pause_lock:
+                return self._pause_requested
+
         # If background polling is active, just return current flag
         if getattr(self, '_polling_active', False):
             return self._pause_requested
