@@ -780,10 +780,11 @@ class PausibleOptunaOptimizer:
                 logger.warning("⚠️  Pause functionality disabled")
                 self.keyboard_handler = None
 
-        # Start background polling for immediate schedule/cancel feedback
-        # Note: ImprovedKeyboardHandler proves background threads CAN use print() successfully
-        if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
-            self._start_pause_polling_thread()
+        # Background polling thread removed for stability
+        # Having two threads access terminal I/O (ImprovedKeyboardHandler's monitoring +
+        # our polling thread) causes TTY corruption after 30-60 minutes, crashing tmux.
+        # Trade-off: No immediate feedback when pressing 'p', but stable long runs.
+        # Pause detection still works - checked at trial boundaries from main thread.
 
         # Run trials with periodic saves
         trials_in_batch = 0
