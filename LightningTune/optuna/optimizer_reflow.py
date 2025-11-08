@@ -302,13 +302,18 @@ class ReflowOptunaDrivenOptimizer:
             # Apply fixed config overrides first
             if self.config_overrides:
                 config = apply_dotted_updates(config, self.config_overrides)
-            
+
             # Then apply suggested hyperparameters from search space
             if callable(self.search_space) and not hasattr(self.search_space, 'suggest_params'):
                 suggested_params = self.search_space(trial)
             else:
                 suggested_params = self.search_space.suggest_params(trial)
             config = apply_dotted_updates(config, suggested_params)
+
+            # CRITICAL FIX: Re-apply config_overrides to ensure they take precedence
+            # over search space suggestions (important for test mode settings)
+            if self.config_overrides:
+                config = apply_dotted_updates(config, self.config_overrides)
             
             # Setup callbacks
             callbacks = list(self.callbacks)

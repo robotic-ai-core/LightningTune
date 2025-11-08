@@ -183,7 +183,7 @@ class OptunaDrivenOptimizer:
             # Apply fixed config overrides first
             if self.config_overrides:
                 config = apply_dotted_updates(config, self.config_overrides)
-            
+
             # Then apply suggested hyperparameters from search space
             if callable(self.search_space) and not hasattr(self.search_space, 'suggest_params'):
                 # It's a function
@@ -192,6 +192,11 @@ class OptunaDrivenOptimizer:
                 # It's an OptunaSearchSpace object
                 suggested_params = self.search_space.suggest_params(trial)
             config = apply_dotted_updates(config, suggested_params)
+
+            # CRITICAL FIX: Re-apply config_overrides to ensure they take precedence
+            # over search space suggestions (important for test mode settings like FAST_HPO_TESTS)
+            if self.config_overrides:
+                config = apply_dotted_updates(config, self.config_overrides)
             
             # Create model and datamodule
             # Handle LightningCLI-style config with class_path and init_args
