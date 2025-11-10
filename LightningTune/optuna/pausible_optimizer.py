@@ -341,28 +341,28 @@ class PausibleOptunaOptimizer:
     def save_study_to_wandb(self, study: optuna.Study, expected_trials: int) -> bool:
         """
         Save study state to WandB as an artifact.
-        
+
         Only saves if the study is in a valid state (no incomplete trials).
-        
+
         Args:
             study: Optuna study to save
             expected_trials: Expected number of completed trials
-            
+
         Returns:
             True if saved successfully, False otherwise
         """
         if not self.wandb_project:
             logger.debug("WandB project not configured, skipping save")
             return False
-        
+
         # Verify study integrity
         is_valid, finished_count, message = self._verify_study_integrity(study)
-        
+
         if not is_valid:
             logger.warning(f"⚠️  Cannot save study: {message}")
             logger.warning("   Incomplete trials must finish before saving.")
             return False
-        
+
         # Verify expected count matches actual
         if finished_count != expected_trials:
             logger.warning(
@@ -372,9 +372,9 @@ class PausibleOptunaOptimizer:
             trials_completed = finished_count
         else:
             trials_completed = expected_trials
-        
+
         logger.info(f"💾 Saving study: {message}")
-        
+
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pkl') as tmp:
             session_info = {
                 "study": study,
@@ -565,11 +565,18 @@ class PausibleOptunaOptimizer:
                     )
             
             if session_info is None:
-                logger.error(f"❌ Failed to resume from '{resume_from}' - starting new study instead")
-                logger.info("   Possible reasons:")
-                logger.info("   - No checkpoint exists with this name")
-                logger.info("   - WandB project/study name mismatch")
-                logger.info("   - Network/authentication issues with WandB")
+                logger.error(f"\n{'='*60}")
+                logger.error(f"❌ FATAL: Failed to resume from '{resume_from}'")
+                logger.error(f"{'='*60}")
+                logger.error(f"Possible reasons:")
+                logger.error(f"  • No checkpoint exists with this name")
+                logger.error(f"  • WandB project/study name mismatch")
+                logger.error(f"  • Network/authentication issues with WandB")
+                logger.error(f"  • File is corrupted or unreadable")
+                logger.error(f"\n💡 To start a fresh study, remove the --resume-from flag")
+                logger.error(f"{'='*60}\n")
+                import sys
+                sys.exit(1)  # Exit with error - DO NOT start fresh study!
         
         if session_info:
             study = session_info["study"]
@@ -722,10 +729,10 @@ class PausibleOptunaOptimizer:
         # Merge optimizer kwargs
         opt_kwargs = self.optimizer_kwargs.copy()
         opt_kwargs.update(kwargs)
-        
+
         # Extract direction to avoid duplicate argument
         direction = opt_kwargs.pop("direction", "minimize")
-        
+
         # Create optimizer (use Reflow version if requested)
         # Backward compatibility: disable Reflow if model_class is not a LightningModule type
         try:
@@ -829,8 +836,19 @@ class PausibleOptunaOptimizer:
                 logger.warning("⚠️  Using legacy polling thread (upgrade to KeyboardHandlerService to eliminate)")
         
         # Run trials with periodic saves
-        trials_in_batch = 0
-        last_saved_trial_count = self.total_trials_completed
+        # If resuming, restore the counter state from checkpoint
+        # Note: When we load checkpoint, self.total_trials_completed is already set from it
+        # That value IS the last saved count, so we can use it directly
+        # Note: last_checkpoint_trial_count is a LOCAL loop variable (not persisted to disk)
+        if session_info:
+            # Checkpoint's total_trials_completed IS the last saved count
+            checkpoint_trial_count = session_info.get('total_trials_completed', 0)
+            trials_in_batch = self.total_trials_completed - checkpoint_trial_count
+            logger.info(f"📊 Restored save counter: {trials_in_batch}/{self.save_every_n_trials} trials since last save")
+            last_checkpoint_trial_count = checkpoint_trial_count
+        else:
+            trials_in_batch = 0
+            last_checkpoint_trial_count = self.total_trials_completed
         
         while self.total_trials_completed < n_trials and not self.should_pause:
             # Record number of finished trials (COMPLETE + PRUNED) before this trial
@@ -878,19 +896,20 @@ class PausibleOptunaOptimizer:
                     # Trial finished (either completed or pruned)
                     self.total_trials_completed = trials_after
                     trials_in_batch += 1
-                    
+
                     # Get the latest trial to check if it was pruned
                     latest_trial = study.trials[-1]
                     status = "✅ COMPLETE" if latest_trial.state == optuna.trial.TrialState.COMPLETE else "⏭️ PRUNED"
-                    
+
                     # Simplify param names for logging if enabled
                     trial_params = latest_trial.params
                     if self.simplify_param_names and trial_params:
                         from ..utils.param_utils import simplify_param_names
                         trial_params = simplify_param_names(trial_params)
-                    
+
                     # Log trial result (simplified for Lightning progress bar compatibility)
-                    logger.info(f"✓ Trial {trial_number}: {status} | {self.total_trials_completed}/{n_trials} complete")
+                    save_info = f"[{trials_in_batch}/{self.save_every_n_trials} until save]" if self.save_every_n_trials else ""
+                    logger.info(f"✓ Trial {trial_number}: {status} | {self.total_trials_completed}/{n_trials} complete {save_info}")
                     
                     try:
                         # study.best_trial raises an exception if no COMPLETE trials exist
@@ -904,8 +923,9 @@ class PausibleOptunaOptimizer:
                         pass  # Skip logging if no successful trials yet
 
                     # Always mirror local checkpoint if configured
+                    local_save_success = False
                     if self.local_checkpoint_dir:
-                        persist_save_study_to_local(
+                        local_save_success = persist_save_study_to_local(
                             self.local_checkpoint_dir,
                             study,
                             self.total_trials_completed,
@@ -914,27 +934,46 @@ class PausibleOptunaOptimizer:
                             study_name=self.study_name,
                             config_overrides=self.persistent_config_overrides,
                         )
-                    # Periodic WandB save
-                    if self.wandb_project and trials_in_batch >= self.save_every_n_trials:
-                        if persist_save_study_to_wandb(
-                            self.wandb_project,
-                            study_name=self.study_name,
-                            study=study,
-                            total_trials_completed=self.total_trials_completed,
-                            sampler_name=self.sampler_name,
-                            pruner_name=self.pruner_name,
-                            config_overrides=self.persistent_config_overrides,
-                        ):
-                            last_saved_trial_count = self.total_trials_completed
-                        trials_in_batch = 0
 
-                        # Exit for auto-restart if enabled
-                        if self.restart_on_save:
-                            logger.info(f"\n🔄 restart_on_save enabled: Exiting after save for process restart")
-                            logger.info(f"   Study saved with {self.total_trials_completed} trials")
-                            logger.info(f"   Resume with: --resume-from {self.args.resume_from if hasattr(self, 'args') else 'latest'}")
-                            import sys
-                            sys.exit(42)  # Exit code 42 signals successful save + restart
+                    # Periodic save (WandB or local-only)
+                    if trials_in_batch >= self.save_every_n_trials:
+                        save_succeeded = False
+
+                        # Try WandB save if configured
+                        if self.wandb_project:
+                            save_succeeded = persist_save_study_to_wandb(
+                                self.wandb_project,
+                                study_name=self.study_name,
+                                study=study,
+                                total_trials_completed=self.total_trials_completed,
+                                sampler_name=self.sampler_name,
+                                pruner_name=self.pruner_name,
+                                config_overrides=self.persistent_config_overrides,
+                            )
+                            if not save_succeeded:
+                                logger.warning("⚠️  WandB save failed")
+                        else:
+                            # No WandB, use local save success
+                            save_succeeded = local_save_success
+                            if save_succeeded:
+                                logger.info(f"💾 Local checkpoint saved (trial {self.total_trials_completed})")
+
+                        # Handle restart-on-save if save was successful
+                        if save_succeeded:
+                            last_checkpoint_trial_count = self.total_trials_completed
+                            trials_in_batch = 0
+
+                            # Exit for auto-restart if enabled
+                            if self.restart_on_save:
+                                resume_path = "latest" if self.wandb_project else str(self.local_checkpoint_dir)
+                                logger.info(f"\n🔄 restart_on_save enabled: Exiting after save for process restart")
+                                logger.info(f"   Study saved with {self.total_trials_completed} trials")
+                                logger.info(f"   Resume with: --resume-from {resume_path}")
+                                import sys
+                                sys.exit(42)  # Exit code 42 signals successful save + restart
+                        else:
+                            # Save failed, reset counter to avoid retry loop
+                            trials_in_batch = 0
 
                     # Check for pause or quit request after trial completes
                     if self._update_pause_from_keyboard():
@@ -1023,7 +1062,7 @@ class PausibleOptunaOptimizer:
                 logger.info(f"💾 Saving study state for pause (with {self.total_trials_completed} finished trials)")
                 study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
                 if study_was_saved:
-                    last_saved_trial_count = self.total_trials_completed
+                    last_checkpoint_trial_count = self.total_trials_completed
 
                     # Exit for auto-restart if enabled
                     if self.restart_on_save:
@@ -1033,7 +1072,7 @@ class PausibleOptunaOptimizer:
                         sys.exit(42)  # Exit code 42 signals successful save + restart
                 else:
                     logger.error("⚠️  Failed to save study for pause - checkpoint may be incomplete")
-        elif self.wandb_project and self.total_trials_completed > last_saved_trial_count:
+        elif self.wandb_project and self.total_trials_completed > last_checkpoint_trial_count:
             # Regular final save - only if we have new finished trials since last save
             logger.info(f"💾 Saving final state with {self.total_trials_completed} finished trials")
             study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)

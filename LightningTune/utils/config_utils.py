@@ -59,20 +59,25 @@ def apply_dotted_updates(config: Dict[str, Any], updates: Dict[str, Any]) -> Dic
         True
     """
     result = copy.deepcopy(config)
-    
+
     for key, value in updates.items():
         if '.' in key:
             # Handle nested keys like "model.learning_rate"
             parts = key.split('.')
             current = result
             for part in parts[:-1]:
+                # Skip navigation if we hit a non-dict object (like a model instance)
+                if not isinstance(current, dict):
+                    break
                 if part not in current:
                     current[part] = {}
                 current = current[part]
-            current[parts[-1]] = value
+            # Only set if current is still a dict
+            if isinstance(current, dict):
+                current[parts[-1]] = value
         else:
             result[key] = value
-    
+
     return result
 
 

@@ -264,6 +264,18 @@ class HPORunner:
             checkpoint = temp_optimizer.load_study_from_wandb(resume_from)
             return checkpoint
 
+        # Try local checkpoint directory for "latest" (no WandB)
+        if resume_from == "latest":
+            from pathlib import Path
+            # Try to find local checkpoint in checkpoints/<study_name>/study.pkl
+            study_name = self.args.study_name or self.default_study_name
+            local_checkpoint_path = Path("checkpoints") / study_name / "study.pkl"
+            if local_checkpoint_path.exists():
+                logger.info(f"📂 Found local checkpoint: {local_checkpoint_path}")
+                with open(local_checkpoint_path, 'rb') as f:
+                    checkpoint = pickle.load(f)
+                    return checkpoint
+
         logger.error(f"❌ Could not load checkpoint: {resume_from}")
         return None
 
@@ -367,6 +379,154 @@ class HPORunner:
         # Merge
         return deep_merge_configs(base_dict, override_dict)
 
+    def run_with_auto_restart(self, argv: Optional[List[str]] = None) -> int:
+        """
+        Run HPO with automatic subprocess restarts for complete resource cleanup.
+
+        This orchestrator spawns child processes to run the actual optimization.
+        Each save triggers a clean process restart, ensuring complete resource
+        cleanup (GPU memory, DataLoaders, thread pools, file handles, etc.).
+
+        Edge Cases Handled:
+        - User's initial --resume-from path is overridden on first restart (intentional)
+        - Subprocess crashes propagate exit code to parent
+        - Ctrl+C is caught both in child (returns 130) and parent (exception handler)
+        - Environment flag prevents infinite nested restarts
+
+        Args:
+            argv: Optional command line arguments (for testing)
+
+        Returns:
+            Exit code (0 for success, non-zero for failure)
+        """
+        import subprocess
+
+        restart_count = 0
+        max_restarts = 100  # Safety limit - if we hit this, something is wrong
+
+        # Build command for subprocess
+        if argv is None:
+            cmd = [sys.executable] + sys.argv
+        else:
+            # For testing: validate sys.argv[0] is a valid script path
+            script_path = sys.argv[0]
+            if not script_path or not Path(script_path).exists():
+                raise RuntimeError(
+                    f"Cannot construct subprocess command: sys.argv[0]='{script_path}' is not a valid script path. "
+                    "This usually means run_with_auto_restart() was called from an unexpected context (e.g., pytest module mode)."
+                )
+            cmd = [sys.executable, script_path] + argv
+
+        # Ensure restart-on-save is enabled (for child processes)
+        # Note: Check both --restart-on-save and --restart-on-save=... forms
+        has_restart_flag = any(
+            arg == "--restart-on-save" or arg.startswith("--restart-on-save=")
+            for arg in cmd
+        )
+        if not has_restart_flag:
+            cmd.append("--restart-on-save")
+
+        # Add environment flag to prevent nested auto-restart
+        # Note: This copies all environment variables, which is standard practice
+        # for subprocess.run(). Be aware credentials are propagated.
+        env = os.environ.copy()
+        env["LIGHTNING_TUNE_NO_AUTO_RESTART"] = "1"
+
+        logger.info("="*60)
+        logger.info("🔄 HPO Auto-Restart Mode")
+        logger.info("="*60)
+        logger.info("This will automatically restart the process after each save")
+        logger.info("for complete resource cleanup (GPU memory, DataLoaders, etc.)")
+        logger.info("Press Ctrl+C to stop gracefully")
+        logger.info("="*60)
+
+        try:
+            while restart_count < max_restarts:
+                # Add --resume-from after first run
+                if restart_count > 0:
+                    # Remove any existing --resume-from flag and its argument
+                    # This handles both --resume-from value and --resume-from=value forms
+                    cleaned_cmd = []
+                    skip_next = False
+                    for i, arg in enumerate(cmd):
+                        if skip_next:
+                            skip_next = False
+                            continue
+                        if arg == "--resume-from":
+                            # Skip both the flag and the next argument
+                            skip_next = True
+                            continue
+                        if arg.startswith("--resume-from="):
+                            # Skip --resume-from=value form
+                            continue
+                        cleaned_cmd.append(arg)
+
+                    # Add new resume flag
+                    cmd = cleaned_cmd + ["--resume-from", "latest"]
+
+                    logger.info(f"\n{'='*60}")
+                    logger.info(f"🔄 Restart #{restart_count}: Resuming from latest checkpoint")
+                    logger.info(f"{'='*60}\n")
+                else:
+                    logger.info(f"\n🚀 Starting initial HPO run\n")
+
+                # Run subprocess with generous timeout (24 hours)
+                # Note: subprocess.run() without capture_output=True inherits parent's
+                # stdout/stderr, so child output is visible to user
+                timeout_seconds = 24 * 60 * 60  # 24 hours
+                try:
+                    result = subprocess.run(cmd, env=env, timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    logger.error(f"\n{'='*60}")
+                    logger.error(f"❌ Child process timed out after {timeout_seconds}s")
+                    logger.error(f"   Restart count: {restart_count}")
+                    logger.error(f"{'='*60}")
+                    return 1
+
+                # Handle exit codes
+                if result.returncode == 42:
+                    # Successful save, restart
+                    restart_count += 1
+                    logger.info(f"\n✅ Save successful! Restarting process...")
+                    continue
+
+                elif result.returncode == 0:
+                    # Normal completion
+                    logger.info(f"\n{'='*60}")
+                    logger.info(f"🎉 HPO Complete! Total restarts: {restart_count}")
+                    logger.info(f"{'='*60}")
+                    return 0
+
+                elif result.returncode == 130:
+                    # Ctrl+C (SIGINT)
+                    logger.info(f"\n{'='*60}")
+                    logger.info(f"⚠️  Interrupted by user")
+                    logger.info(f"{'='*60}")
+                    return 130
+
+                else:
+                    # Error - provide context for debugging
+                    logger.error(f"\n{'='*60}")
+                    logger.error(f"❌ HPO failed with exit code: {result.returncode}")
+                    logger.error(f"   Restart count: {restart_count}")
+                    logger.error(f"   Command: {' '.join(cmd)}")
+                    logger.error(f"{'='*60}")
+                    return result.returncode
+
+            # Exceeded max restarts - something is wrong with save logic
+            logger.error(f"\n{'='*60}")
+            logger.error(f"❌ Exceeded maximum restarts ({max_restarts})")
+            logger.error(f"   This usually indicates a problem with checkpoint saving.")
+            logger.error(f"   Check save_every setting and checkpoint storage.")
+            logger.error(f"{'='*60}")
+            return 1
+
+        except KeyboardInterrupt:
+            # This catches Ctrl+C pressed in the brief moment between subprocess runs
+            # (Child process Ctrl+C is caught by the returncode == 130 branch above)
+            logger.info(f"\n⚠️  Ctrl+C received in parent. Exiting gracefully...")
+            return 130
+
     def run_from_cli(self, argv: Optional[List[str]] = None) -> Any:
         """
         Run HPO from command line arguments.
@@ -376,6 +536,40 @@ class HPORunner:
         - Loading checkpoints if resuming
         - Restoring saved arguments
         - Running optimization
+
+        If --restart-on-save is enabled and this is the parent process,
+        automatically runs in subprocess mode for resource cleanup.
+
+        Args:
+            argv: Optional command line arguments (for testing)
+
+        Returns:
+            Optuna study object (if running directly) or exit code (if orchestrating)
+        """
+        # Quick parse to check for restart-on-save flag
+        # Use a temporary parser to avoid side effects
+        temp_parser = self._create_parser()
+        temp_args, _ = temp_parser.parse_known_args(argv)
+
+        # Check if we should use auto-restart orchestration
+        restart_on_save = getattr(temp_args, 'restart_on_save', False)
+        # Robust check for environment flag (handles multiple truthy values)
+        env_value = os.environ.get("LIGHTNING_TUNE_NO_AUTO_RESTART", "")
+        is_child_process = env_value in ("1", "true", "TRUE", "True", "yes", "YES")
+
+        if restart_on_save and not is_child_process:
+            # Parent orchestrator mode - spawn child processes
+            exit_code = self.run_with_auto_restart(argv)
+            sys.exit(exit_code)
+        else:
+            # Child worker mode or normal mode - run actual optimization
+            return self._run_optimization(argv)
+
+    def _run_optimization(self, argv: Optional[List[str]] = None) -> Any:
+        """
+        Run the actual optimization (called by child process or directly if no auto-restart).
+
+        This is the core optimization logic that was previously in run_from_cli.
 
         Args:
             argv: Optional command line arguments (for testing)
@@ -413,6 +607,7 @@ class HPORunner:
                 self.args.study_name = f"{self.args.sampler}_{self.args.pruner}_study"
 
         # Handle resume
+        checkpoint_config_overrides = {}  # Initialize first to avoid UnboundLocalError
         if self.args.resume_from:
             logger.info(f"\n{'='*60}")
             logger.info(f"📂 RESUMING FROM CHECKPOINT")
@@ -457,8 +652,20 @@ class HPORunner:
                 # This preserves non-"args.*" config overrides (like data.batch_size, data.num_workers)
                 # that were set in the original run
                 checkpoint_config_overrides = checkpoint.get('config_overrides', {})
-        else:
-            checkpoint_config_overrides = {}
+            else:
+                # Resume was explicitly requested but failed - DO NOT start fresh!
+                logger.error(f"\n{'='*60}")
+                logger.error(f"❌ FATAL: Failed to resume from checkpoint")
+                logger.error(f"{'='*60}")
+                logger.error(f"Checkpoint path: {self.args.resume_from}")
+                logger.error(f"\nPossible causes:")
+                logger.error(f"  • Checkpoint file/artifact does not exist")
+                logger.error(f"  • WandB project/study name mismatch")
+                logger.error(f"  • File is corrupted or unreadable")
+                logger.error(f"  • Network/authentication issues with WandB")
+                logger.error(f"\n💡 To start a fresh study, remove the --resume-from flag")
+                logger.error(f"{'='*60}\n")
+                sys.exit(1)  # Exit with error - DO NOT start fresh study!
 
         # Build config overrides from final args
         self.config_overrides = self._build_config_overrides()
@@ -503,12 +710,24 @@ class HPORunner:
             # Prefer config-driven approach instead of code-side trainer mutations.
             import os as _os
             if _os.environ.get('PYTEST_CURRENT_TEST') or _os.environ.get('FAST_HPO_TESTS'):
+                print("🚀 FAST_HPO_TESTS mode: applying minimal test config", flush=True)
                 self.config_overrides["trainer.limit_train_batches"] = 1
-                self.config_overrides["trainer.limit_val_batches"] = 1
+                # Use 2 val batches to ensure epoch aggregation works properly
+                self.config_overrides["trainer.limit_val_batches"] = 2
+                print(f"   Set limit_val_batches = 2", flush=True)
                 self.config_overrides["trainer.num_sanity_val_steps"] = 0
                 self.config_overrides["trainer.max_epochs"] = 1
-        except Exception:
-            pass
+                # Also ensure validation runs by setting check interval
+                self.config_overrides["trainer.val_check_interval"] = 1
+                print(f"   Set val_check_interval = 1", flush=True)
+                # Disable expensive callbacks by overriding them to empty list
+                # This happens BEFORE merge, so callbacks won't be instantiated
+                self.config_overrides["trainer.callbacks"] = []
+                print("   ✅ Disabled all callbacks for fast testing", flush=True)
+        except Exception as e:
+            print(f"⚠️  Error in FAST_HPO_TESTS config: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
         # Merge configs
         final_config = self._merge_configs()
