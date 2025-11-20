@@ -165,3 +165,7 @@ checkpoints/
 *.pkl
 *.db
 session_args.yaml
+
+# Runtime artifacts
+checkpoints/**/*.pkl
+*.pkl
