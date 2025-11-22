@@ -125,6 +125,23 @@ class HPORunner:
         self.enable_pause = enable_pause
         self.pause_key = pause_key
 
+        # Auto-wrap dictionary search spaces
+        # This allows passing a dict where values are callables:
+        # search_space = {
+        #     "model.lr": lambda t: t.suggest_float("lr", 1e-4, 1e-2),
+        #     "data.bs": lambda t: t.suggest_categorical("bs", [32, 64])
+        # }
+        if isinstance(search_space, dict):
+            # Check if values are callables
+            if all(callable(v) for v in search_space.values()):
+                self.search_space = self._create_dict_search_space_wrapper(search_space)
+            else:
+                # Assume it's a SimpleSearchSpace definition (dict of tuples)
+                from .optuna.search_space import SimpleSearchSpace
+                self.search_space = SimpleSearchSpace(search_space)
+        else:
+            self.search_space = search_space
+
         # Merge additional CLI args with defaults
         self.cli_args = self.DEFAULT_CLI_ARGS.copy()
         if additional_cli_args:
@@ -138,6 +155,26 @@ class HPORunner:
         self._crash_logger = None
         # Thread monitor (set up in run_from_cli if enabled)
         self._thread_monitor = None
+
+    @staticmethod
+    def _create_dict_search_space_wrapper(search_space_dict: Dict[str, Callable]) -> Callable:
+        """
+        Create a wrapper function for a dictionary-based search space.
+
+        Args:
+            search_space_dict: Dictionary where keys are config paths and values are
+                             callables taking a trial and returning a value.
+
+        Returns:
+            Callable taking a trial and returning a config dictionary.
+        """
+        def wrapper(trial):
+            params = {}
+            for key, value_fn in search_space_dict.items():
+                # Execute the callable to get the suggested value
+                params[key] = value_fn(trial)
+            return params
+        return wrapper
 
     def _create_parser(self) -> argparse.ArgumentParser:
         """Create argument parser with all defined CLI arguments."""
@@ -1004,9 +1041,20 @@ class HPORunner:
             >>> print(command)
         """
         from .utils import extract_cli_args_from_config, format_cli_command
+        import copy
+        import yaml
 
-        # Reconstruct config from best trial
-        best_config = self.search_space(study.best_trial)
+        # Load base config
+        if isinstance(self.base_config, str):
+            with open(self.base_config) as f:
+                config = yaml.safe_load(f)
+        elif isinstance(self.base_config, dict):
+            config = copy.deepcopy(self.base_config)
+        else:
+            config = {}
+
+        # Reconstruct config from best trial using standard 2-arg signature
+        best_config = self.search_space(study.best_trial, config)
 
         # Determine base config path
         if base_config_path is None:

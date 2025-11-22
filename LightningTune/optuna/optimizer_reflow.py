@@ -298,17 +298,24 @@ class ReflowOptunaDrivenOptimizer:
         def objective(trial: optuna.Trial) -> float:
             # Start with base config (defensive for None)
             config = (self.base_config or {}).copy()
-            
+
             # Apply fixed config overrides first
             if self.config_overrides:
                 config = apply_dotted_updates(config, self.config_overrides)
 
-            # Then apply suggested hyperparameters from search space
+            # Apply suggested hyperparameters from search space
             if callable(self.search_space) and not hasattr(self.search_space, 'suggest_params'):
-                suggested_params = self.search_space(trial)
+                # Standard 2-arg signature: search_space(trial, config) -> config
+                # Ensure we have a deep copy
+                import copy
+                config = copy.deepcopy(config)
+
+                # Function modifies config in place and returns it
+                config = self.search_space(trial, config)
             else:
+                # Object-based search space (e.g., SimpleSearchSpace)
                 suggested_params = self.search_space.suggest_params(trial)
-            config = apply_dotted_updates(config, suggested_params)
+                config = apply_dotted_updates(config, suggested_params)
 
             # CRITICAL FIX: Re-apply config_overrides to ensure they take precedence
             # over search space suggestions (important for test mode settings)

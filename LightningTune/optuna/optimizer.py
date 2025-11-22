@@ -11,6 +11,8 @@ import yaml
 import tempfile
 import shutil
 import atexit
+import copy
+import inspect
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, Union, Type, List
 import logging
@@ -168,6 +170,17 @@ class OptunaDrivenOptimizer:
         Returns:
             Objective function that takes a trial and returns a metric value
         """
+        # Pre-check if search space is config-aware (takes 2+ args: trial, config)
+        is_config_aware = False
+        if callable(self.search_space) and not hasattr(self.search_space, 'suggest_params'):
+            try:
+                sig = inspect.signature(self.search_space)
+                # Check for at least 2 parameters (trial, config)
+                if len(sig.parameters) >= 2:
+                    is_config_aware = True
+            except Exception:
+                pass
+
         def objective(trial: optuna.Trial) -> float:
             # Start with base config (defensive for None / empty YAML)
             config = (self.base_config or {}).copy()
@@ -187,11 +200,34 @@ class OptunaDrivenOptimizer:
             # Then apply suggested hyperparameters from search space
             if callable(self.search_space) and not hasattr(self.search_space, 'suggest_params'):
                 # It's a function
-                suggested_params = self.search_space(trial)
+                if is_config_aware:
+                    # Config-aware search space: func(trial, config) -> updated_config
+                    # Ensure we have a deep copy if we haven't already (apply_dotted_updates does it)
+                    if not self.config_overrides:
+                        config = copy.deepcopy(config)
+                    
+                    # Pass config to user function
+                    # User can modify in-place or return new config
+                    result = self.search_space(trial, config)
+                    
+                    if isinstance(result, dict):
+                        # Treat return value as updates (dotted or partial)
+                        # This handles both {"model.lr": 0.1} and {"model": {...}}
+                        config = apply_dotted_updates(config, result)
+                    
+                    # Define suggested_params for logging purposes
+                    suggested_params = trial.params
+                    
+                    # Note: We don't call apply_dotted_updates here because the user
+                    # function is responsible for returning the full config or modifying it.
+                else:
+                    # Standard search space: func(trial) -> updates_dict
+                    suggested_params = self.search_space(trial)
+                    config = apply_dotted_updates(config, suggested_params)
             else:
                 # It's an OptunaSearchSpace object
                 suggested_params = self.search_space.suggest_params(trial)
-            config = apply_dotted_updates(config, suggested_params)
+                config = apply_dotted_updates(config, suggested_params)
 
             # CRITICAL FIX: Re-apply config_overrides to ensure they take precedence
             # over search space suggestions (important for test mode settings like FAST_HPO_TESTS)
