@@ -312,6 +312,9 @@ class ReflowOptunaDrivenOptimizer:
 
                 # Function modifies config in place and returns it
                 config = self.search_space(trial, config)
+
+                # Extract suggested params from trial for WandB logging
+                suggested_params = trial.params
             else:
                 # Object-based search space (e.g., SimpleSearchSpace)
                 suggested_params = self.search_space.suggest_params(trial)
