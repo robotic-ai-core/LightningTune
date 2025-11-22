@@ -71,6 +71,14 @@ class HPORunner:
         'enable_pause': {'type': bool, 'default': None, 'action': 'store_true', 'help': 'Enable interactive pause (press p to pause)'},
         'disable_pause': {'type': bool, 'default': False, 'action': 'store_true', 'help': 'Disable interactive pause'},
         'pause_key': {'type': str, 'default': None, 'help': 'Key to trigger pause (default: p)'},
+        # Crash logging
+        'crash_logging': {'type': bool, 'default': False, 'action': 'store_true', 'help': 'Enable crash-resistant logging'},
+        'crash_log_dir': {'type': str, 'default': '/tmp/hpo_crash_logs', 'help': 'Directory for crash logs'},
+        'crash_log_buffer': {'type': int, 'default': 2000, 'help': 'Number of lines to keep in crash log buffer'},
+        # Thread monitoring
+        'thread_monitor': {'type': bool, 'default': False, 'action': 'store_true', 'help': 'Enable thread monitoring for debugging'},
+        'thread_monitor_interval': {'type': int, 'default': 30, 'help': 'Thread monitor check interval in seconds'},
+        'thread_monitor_threshold': {'type': int, 'default': 10, 'help': 'Warn if thread count exceeds this value'},
     }
 
     # Arguments that should not be persisted
@@ -125,6 +133,11 @@ class HPORunner:
         # Parsed arguments will be stored here
         self.args = None
         self.config_overrides = {}
+
+        # Crash logger (set up in run_from_cli if enabled)
+        self._crash_logger = None
+        # Thread monitor (set up in run_from_cli if enabled)
+        self._thread_monitor = None
 
     def _create_parser(self) -> argparse.ArgumentParser:
         """Create argument parser with all defined CLI arguments."""
@@ -581,6 +594,27 @@ class HPORunner:
         parser = self._create_parser()
         self.args, unknown_args = parser.parse_known_args(argv)
 
+        # Set up crash-resistant logging if enabled
+        if getattr(self.args, 'crash_logging', False):
+            from .utils.crash_logger import setup_crash_resistant_logging
+            self._crash_logger = setup_crash_resistant_logging(
+                log_dir=getattr(self.args, 'crash_log_dir', '/tmp/hpo_crash_logs'),
+                prefix=getattr(self.args, 'study_name', 'hpo') or 'hpo',
+                max_buffer_lines=getattr(self.args, 'crash_log_buffer', 2000),
+                auto_start=True,
+            )
+            logger.info("Crash-resistant logging enabled")
+
+        # Set up thread monitoring if enabled
+        if getattr(self.args, 'thread_monitor', False):
+            from .utils.thread_monitor import ThreadMonitor
+            self._thread_monitor = ThreadMonitor(
+                interval=getattr(self.args, 'thread_monitor_interval', 30),
+                warn_threshold=getattr(self.args, 'thread_monitor_threshold', 10),
+            )
+            self._thread_monitor.start(daemon=True)
+            logger.info(f"Thread monitoring enabled (interval: {self._thread_monitor.interval}s, threshold: {self._thread_monitor.warn_threshold})")
+
         # Handle --config CLI argument (overrides __init__ base_config)
         if self.args.config is not None:
             config_path = Path(self.args.config)
@@ -850,17 +884,33 @@ class HPORunner:
             local_checkpoint_dir=(str(_local_ckpt_dir) if _local_ckpt_dir is not None else None),
         )
 
-        # Run optimization
-        study = optimizer.optimize(
-            n_trials=self.args.n_trials,
-            resume_from=self.args.resume_from,
-            config_overrides=self.config_overrides,
-            callbacks=self.callbacks,
-        )
+        # Run optimization with crash logging protection
+        try:
+            study = optimizer.optimize(
+                n_trials=self.args.n_trials,
+                resume_from=self.args.resume_from,
+                config_overrides=self.config_overrides,
+                callbacks=self.callbacks,
+            )
 
-        logger.info("\n✨ Optimization Complete!")
+            logger.info("\n✨ Optimization Complete!")
 
-        return study
+            return study
+        except Exception as e:
+            # Flush crash logs on exception
+            if self._crash_logger:
+                self._crash_logger.flush()
+            raise
+        finally:
+            # Stop thread monitoring
+            if self._thread_monitor:
+                self._thread_monitor.stop()
+                self._thread_monitor.print_summary()
+                self._thread_monitor = None
+            # Stop crash logging
+            if self._crash_logger:
+                self._crash_logger.stop()
+                self._crash_logger = None
 
     def run(self, **kwargs) -> Any:
         """
@@ -898,3 +948,90 @@ class HPORunner:
                     argv.extend([cli_key, str(value)])
 
         return self.run_from_cli(argv)
+
+    def format_results(
+        self,
+        study,
+        *,
+        header: str = "OPTIMIZATION COMPLETE",
+        width: int = 80,
+    ) -> str:
+        """
+        Format the optimization results as a string.
+
+        Args:
+            study: Optuna study object
+            header: Header text for results
+            width: Width of separator lines
+
+        Returns:
+            Formatted string with best trial information
+        """
+        from .utils import format_best_trial_results
+        return format_best_trial_results(study, header=header, width=width)
+
+    def generate_best_config_command(
+        self,
+        study,
+        *,
+        script: str = "python train.py fit",
+        base_config_path: str = None,
+        extra_args: Dict[str, Any] = None,
+        excluded_params: set = None,
+    ) -> str:
+        """
+        Generate CLI command to reproduce the best trial.
+
+        This reconstructs the config from the best trial and generates
+        a CLI command that can be used with a training script.
+
+        Args:
+            study: Optuna study object
+            script: Training script command (e.g., "python scripts/train.py fit")
+            base_config_path: Path to base config file (uses self.base_config if None)
+            extra_args: Additional CLI arguments for production training
+            excluded_params: Parameters to exclude from CLI generation
+
+        Returns:
+            Formatted CLI command string
+
+        Example:
+            >>> command = runner.generate_best_config_command(
+            ...     study,
+            ...     script="python scripts/train_world_model.py fit",
+            ...     extra_args={"trainer.max_epochs": 2000}
+            ... )
+            >>> print(command)
+        """
+        from .utils import extract_cli_args_from_config, format_cli_command
+
+        # Reconstruct config from best trial
+        best_config = self.search_space(study.best_trial)
+
+        # Determine base config path
+        if base_config_path is None:
+            if isinstance(self.base_config, str):
+                base_config_path = self.base_config
+            else:
+                base_config_path = None
+
+        # Extract CLI arguments
+        cli_args = extract_cli_args_from_config(
+            best_config,
+            base_config_path=base_config_path,
+            extra_args=extra_args,
+            excluded_params=excluded_params or set(),
+        )
+
+        # Format and return command
+        return format_cli_command(cli_args, script=script)
+
+    def describe_search_space(self) -> str:
+        """
+        Generate a human-readable description of the search space.
+
+        Returns:
+            Formatted string describing hyperparameter ranges
+        """
+        from .utils import describe_search_space
+        return describe_search_space(self.search_space)
