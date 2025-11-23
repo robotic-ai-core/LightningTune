@@ -988,7 +988,12 @@ class PausibleOptunaOptimizer:
                             trials_in_batch = 0
 
                     # Check for pause or quit request after trial completes
-                    if self._update_pause_from_keyboard():
+                    pause_check_result = self._update_pause_from_keyboard()
+                    logger.debug(f"[PAUSE DEBUG] After trial {trial_number}: _update_pause_from_keyboard() = {pause_check_result}, "
+                                f"_pause_requested = {self._pause_requested}, "
+                                f"_use_keyboard_service = {self._use_keyboard_service}, "
+                                f"_polling_active = {getattr(self, '_polling_active', False)}")
+                    if pause_check_result:
                         self.should_pause = True
                         logger.info("\n⏸️  Executing pause after trial completion...")
                         if self.wandb_project:
@@ -1090,7 +1095,12 @@ class PausibleOptunaOptimizer:
             study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
         elif self.wandb_project and not self.should_pause:
             logger.info(f"ℹ️  No new finished trials to save since last checkpoint")
-        
+
+        # Debug logging to diagnose pause detection issues
+        logger.debug(f"[PAUSE DEBUG] Loop exited: should_pause={self.should_pause}, "
+                    f"total_trials_completed={self.total_trials_completed}/{n_trials}, "
+                    f"_pause_requested={self._pause_requested}")
+
         if self.should_pause:
             logger.info(f"\n⏸️  OPTIMIZATION PAUSED | {self.total_trials_completed}/{n_trials} trials complete")
             if self.wandb_project:
