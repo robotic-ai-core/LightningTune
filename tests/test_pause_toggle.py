@@ -248,10 +248,297 @@ class TestPauseMessages:
         assert "_update_pause_from_keyboard" in source
 
 
+class TestOptimizeLoopPause:
+    """Test pause detection during actual optimize() execution."""
+
+    def test_pause_during_optimize_loop(self):
+        """Test that pause is detected during optimize() and stops the loop.
+
+        This reproduces the bug where:
+        1. "Pause SCHEDULED" appears
+        2. Trial completes
+        3. "OPTIMIZATION COMPLETE" prints instead of "OPTIMIZATION PAUSED"
+        """
+        import time
+        import threading
+        import optuna
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        # Track trial execution
+        trials_started = []
+
+        def test_objective(trial):
+            """Simple objective that takes some time."""
+            trials_started.append(trial.number)
+            x = trial.suggest_float("x", -10, 10)
+            time.sleep(0.1)  # Small delay to allow pause scheduling
+            return x ** 2
+
+        # Create optimizer with test_mode
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial, config: config,
+            model_class=None,
+            datamodule_class=None,
+            wandb_project=None,
+            study_name="test_pause_loop",
+            enable_pause=True,
+            test_mode=True,  # Disables actual keyboard monitoring
+        )
+
+        # Set up keyboard service simulation
+        optimizer._use_keyboard_service = True
+        optimizer._pause_requested = False
+
+        # Override create_objective to return our test objective
+        optimizer.create_objective = lambda: test_objective
+
+        # Thread to simulate pressing 'p' after the first trial starts
+        def press_pause_key():
+            # Wait for first trial to start
+            while not trials_started:
+                time.sleep(0.01)
+            # Now press 'p' during the trial
+            time.sleep(0.02)
+            optimizer._on_key_press('p')
+
+        pause_thread = threading.Thread(target=press_pause_key)
+        pause_thread.start()
+
+        # Run optimize with 10 trials - should stop after 1 due to pause
+        try:
+            result_study = optimizer.optimize(n_trials=10)
+        except Exception as e:
+            pause_thread.join()
+            raise AssertionError(f"optimize() raised exception: {e}")
+
+        pause_thread.join()
+
+        # KEY ASSERTIONS:
+
+        # 1. should_pause must be True
+        assert optimizer.should_pause == True, \
+            f"Expected should_pause=True after pressing 'p', got {optimizer.should_pause}. " \
+            "This is the bug: pause was scheduled but optimization completed normally."
+
+        # 2. Should have completed only 1-2 trials (not all 10)
+        completed_trials = len([t for t in result_study.trials
+                               if t.state == optuna.trial.TrialState.COMPLETE])
+        assert completed_trials <= 2, \
+            f"Expected 1-2 completed trials due to pause, got {completed_trials}"
+
+    def test_pause_flag_read_correctly(self):
+        """Test that _update_pause_from_keyboard correctly reads _pause_requested."""
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial, config: config,
+            model_class=None,
+            datamodule_class=None,
+            wandb_project=None,
+            study_name="test_flag_read",
+            enable_pause=True,
+            test_mode=True,
+        )
+
+        optimizer._use_keyboard_service = True
+        optimizer._pause_requested = False
+
+        # Initially False
+        assert optimizer._update_pause_from_keyboard() == False
+
+        # Set pause via callback
+        optimizer._on_key_press('p')
+
+        # Should now return True
+        result = optimizer._update_pause_from_keyboard()
+        assert result == True, \
+            f"Expected True after _on_key_press('p'), got {result}"
+
+    def test_callback_toggles_pause_state(self):
+        """Test that _on_key_press correctly toggles _pause_requested."""
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial, config: config,
+            model_class=None,
+            datamodule_class=None,
+            wandb_project=None,
+            study_name="test_toggle_state",
+            enable_pause=True,
+            test_mode=True,
+        )
+
+        optimizer._use_keyboard_service = True
+        optimizer._pause_requested = False
+
+        # First press: schedule pause
+        optimizer._on_key_press('p')
+        assert optimizer._pause_requested == True, "First 'p' should schedule pause"
+
+        # Second press: cancel pause
+        optimizer._on_key_press('p')
+        assert optimizer._pause_requested == False, "Second 'p' should cancel pause"
+
+        # Third press: re-schedule pause
+        optimizer._on_key_press('p')
+        assert optimizer._pause_requested == True, "Third 'p' should re-schedule pause"
+
+    def test_pause_with_polling_active_path(self):
+        """Test pause detection using _polling_active path (ImprovedKeyboardHandler fallback).
+
+        This simulates the fallback path where KeyboardHandlerService is not available
+        and the system uses a background polling thread instead.
+        """
+        import time
+        import threading
+        import optuna
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        trials_started = []
+
+        def test_objective(trial):
+            trials_started.append(trial.number)
+            x = trial.suggest_float("x", -10, 10)
+            time.sleep(0.1)
+            return x ** 2
+
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial, config: config,
+            model_class=None,
+            datamodule_class=None,
+            wandb_project=None,
+            study_name="test_polling_path",
+            enable_pause=True,
+            test_mode=True,
+        )
+
+        # Simulate fallback polling path (NOT keyboard service)
+        optimizer._use_keyboard_service = False
+        optimizer._polling_active = True
+        optimizer._pause_requested = False
+
+        optimizer.create_objective = lambda: test_objective
+
+        def simulate_polling_thread():
+            """Simulate the background polling thread setting _pause_requested."""
+            while not trials_started:
+                time.sleep(0.01)
+            time.sleep(0.02)
+            # This simulates what _pause_input_loop does when 'p' is pressed
+            optimizer._pause_requested = True
+
+        polling_thread = threading.Thread(target=simulate_polling_thread)
+        polling_thread.start()
+
+        try:
+            result_study = optimizer.optimize(n_trials=10)
+        except Exception as e:
+            polling_thread.join()
+            raise AssertionError(f"optimize() raised exception: {e}")
+
+        polling_thread.join()
+
+        # KEY ASSERTIONS:
+        assert optimizer.should_pause == True, \
+            f"Expected should_pause=True with _polling_active path, got {optimizer.should_pause}. " \
+            "This is the bug: _polling_active path doesn't properly detect pause."
+
+        completed_trials = len([t for t in result_study.trials
+                               if t.state == optuna.trial.TrialState.COMPLETE])
+        assert completed_trials <= 2, \
+            f"Expected 1-2 completed trials due to pause, got {completed_trials}"
+
+    def test_pause_with_actual_polling_thread(self):
+        """Test pause detection using the actual _start_pause_polling_thread() method.
+
+        This more closely simulates real usage with ImprovedKeyboardHandler.
+        """
+        import time
+        import threading
+        import optuna
+        from unittest.mock import MagicMock
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        trials_started = []
+
+        def test_objective(trial):
+            trials_started.append(trial.number)
+            x = trial.suggest_float("x", -10, 10)
+            time.sleep(0.15)  # Slightly longer to allow polling thread to process
+            return x ** 2
+
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial, config: config,
+            model_class=None,
+            datamodule_class=None,
+            wandb_project=None,
+            study_name="test_actual_polling",
+            enable_pause=True,
+            test_mode=True,
+        )
+
+        # Create a mock keyboard handler that we can inject keys into
+        key_queue = []
+        class MockKeyboardHandler:
+            def is_available(self):
+                return True
+            def start_monitoring(self):
+                pass
+            def stop_monitoring(self):
+                pass
+            def get_key(self):
+                if key_queue:
+                    return key_queue.pop(0)
+                return None
+
+        optimizer.keyboard_handler = MockKeyboardHandler()
+        optimizer._use_keyboard_service = False
+
+        # Start the actual polling thread
+        optimizer._start_pause_polling_thread()
+
+        optimizer.create_objective = lambda: test_objective
+
+        def inject_pause_key():
+            """Inject 'p' key after trial starts."""
+            while not trials_started:
+                time.sleep(0.01)
+            time.sleep(0.05)  # Wait for trial to be running
+            key_queue.append('p')
+
+        inject_thread = threading.Thread(target=inject_pause_key)
+        inject_thread.start()
+
+        try:
+            result_study = optimizer.optimize(n_trials=10)
+        except Exception as e:
+            inject_thread.join()
+            optimizer._stop_pause_polling_thread()
+            raise AssertionError(f"optimize() raised exception: {e}")
+
+        inject_thread.join()
+        optimizer._stop_pause_polling_thread()
+
+        # KEY ASSERTIONS:
+        assert optimizer.should_pause == True, \
+            f"Expected should_pause=True with actual polling thread, got {optimizer.should_pause}. " \
+            "Bug: polling thread set _pause_requested but optimize() didn't detect it."
+
+        completed_trials = len([t for t in result_study.trials
+                               if t.state == optuna.trial.TrialState.COMPLETE])
+        assert completed_trials <= 2, \
+            f"Expected 1-2 completed trials due to pause, got {completed_trials}"
+
+
 if __name__ == "__main__":
     # Run tests
     test = TestPauseToggle()
-    
+
     print("Running pause toggle tests...")
     
     try:

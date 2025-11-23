@@ -1253,11 +1253,23 @@ class PausibleOptunaOptimizer:
         # If using KeyboardHandlerService, state is managed by callback (thread-safe)
         if self._use_keyboard_service:
             with self._pause_lock:
-                return self._pause_requested
+                result = self._pause_requested
+                if result:
+                    logger.debug(f"[PAUSE DEBUG] KeyboardService path: returning {result}")
+                return result
 
         # If background polling is active, just return current flag
         if getattr(self, '_polling_active', False):
-            return self._pause_requested
+            result = self._pause_requested
+            if result:
+                logger.debug(f"[PAUSE DEBUG] Polling path: returning {result}")
+            return result
+
+        # If we reach here without _use_keyboard_service or _polling_active,
+        # log a warning as this is unexpected with ImprovedKeyboardHandler
+        if not getattr(self, '_manual_poll_warning_logged', False):
+            logger.debug(f"[PAUSE DEBUG] Using manual polling path (use_keyboard_service={self._use_keyboard_service}, polling_active={getattr(self, '_polling_active', False)})")
+            self._manual_poll_warning_logged = True
         try:
             if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
                 key = self.keyboard_handler.get_key()
@@ -1280,9 +1292,12 @@ class PausibleOptunaOptimizer:
                         self._pause_requested = True
                         self.should_pause = True
                         logger.info("\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary...")
-        except Exception:
-            pass
-        return self._pause_requested
+        except Exception as e:
+            logger.debug(f"[PAUSE DEBUG] Exception in manual polling: {e}")
+        result = self._pause_requested
+        if result:
+            logger.debug(f"[PAUSE DEBUG] Manual polling returning: {result}")
+        return result
 
     def _sanitize_argv(self, argv: List[str], flags_to_strip: List[str]) -> List[str]:
         """Remove specified flags (and their values if separate) from argv.
