@@ -1087,17 +1087,29 @@ class PausibleOptunaOptimizer:
                     resume_cmd = self._build_resume_command()
                     logger.info(f"   {resume_cmd}")
                 else:
-                    logger.info(f"⚠️  Failed to save study checkpoint - cannot resume from this point")
+                    logger.info(f"⚠️  Failed to save study to WandB - cannot resume from WandB")
                     logger.info(f"   Check logs above for save errors")
             else:
-                logger.info(f"⚠️  No WandB project configured - checkpoint not saved")
-                logger.info(f"   To enable resume, use --wandb <project-name>")
-            # Print local resume command if configured
-            if self.local_checkpoint_dir:
+                # No WandB, but local checkpoint should be available
+                if self.local_checkpoint_dir:
+                    logger.info(f"💾 Study saved to local checkpoint: {self.local_checkpoint_dir}")
+                    logger.info(f"\n📝 To resume, run:")
+                    try:
+                        local_path = str(self.local_checkpoint_dir)
+                        local_resume_cmd = persist_build_local_resume_command(self._original_argv, "scripts/world_model_hpo_optuna.py", local_path)
+                        logger.info(f"   {local_resume_cmd}")
+                    except Exception as e:
+                        logger.warning(f"   Could not generate resume command: {e}")
+                    logger.info(f"\n💡 For WandB cloud storage, add: --wandb <project-name>")
+                else:
+                    logger.warning(f"⚠️  No checkpoint saved (no WandB or local checkpoint configured)")
+                    logger.info(f"   To enable resume, use --wandb <project-name>")
+            # Also show local resume path for WandB users (backup option)
+            if self.wandb_project and self.local_checkpoint_dir:
                 try:
                     local_path = str(self.local_checkpoint_dir)
                     local_resume_cmd = persist_build_local_resume_command(self._original_argv, "scripts/world_model_hpo_optuna.py", local_path)
-                    logger.info(f"   Local resume: {local_resume_cmd}")
+                    logger.info(f"   Local backup: {local_resume_cmd}")
                 except Exception:
                     pass
             logger.info(f"{'='*60}")

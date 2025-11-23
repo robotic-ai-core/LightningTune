@@ -883,6 +883,10 @@ class HPORunner:
         if final_enable_pause:
             logger.info(f"⏸️  HPO pause enabled: press '{final_pause_key}' to pause at TRIAL boundary")
             logger.info(f"   (Trials will complete before pausing - controlled by PausibleOptunaOptimizer)")
+            if self.args.wandb:
+                logger.info(f"   💾 Checkpoints: WandB (cloud) + local backup")
+            else:
+                logger.info(f"   💾 Checkpoints: local only (add --wandb <project> for cloud storage)")
         else:
             logger.info("⏸️  HPO pause disabled")
 
