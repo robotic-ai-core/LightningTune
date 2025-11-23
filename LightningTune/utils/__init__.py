@@ -8,7 +8,6 @@ from .config_utils import (
 )
 
 from .cli_generation import (
-    config_diff_to_dotted,
     validate_config_for_cli_generation,
     extract_cli_args_from_config,
     format_cli_command,
@@ -32,7 +31,6 @@ __all__ = [
     "merge_with_dotted_updates",
     "load_yaml_config",
     # CLI generation utilities
-    "config_diff_to_dotted",
     "validate_config_for_cli_generation",
     "extract_cli_args_from_config",
     "format_cli_command",

@@ -8,61 +8,6 @@ used to reproduce the best trial with a training script.
 from typing import Dict, Any, List, Callable, Set
 
 
-def config_diff_to_dotted(
-    base_config: Dict[str, Any],
-    modified_config: Dict[str, Any],
-    prefix: str = "",
-) -> Dict[str, Any]:
-    """
-    Compare two nested configs and return differences as dotted keys.
-
-    This function recursively compares two configuration dictionaries and
-    returns only the values that differ, with keys in dotted notation.
-    Only primitive values (int, float, str, bool) are included - complex
-    objects are skipped as they can't be expressed as CLI arguments.
-
-    Args:
-        base_config: Original configuration dictionary
-        modified_config: Modified configuration dictionary
-        prefix: Current key prefix for recursion
-
-    Returns:
-        Dictionary with dotted keys for changed primitive values only
-
-    Example:
-        >>> base = {"model": {"init_args": {"lr": 0.001, "dropout": 0.1}}}
-        >>> modified = {"model": {"init_args": {"lr": 0.01, "dropout": 0.1}}}
-        >>> config_diff_to_dotted(base, modified)
-        {'model.init_args.lr': 0.01}
-    """
-    result = {}
-
-    # Get all keys from modified config
-    if not modified_config:
-        return result
-
-    for key in modified_config:
-        full_key = f"{prefix}.{key}" if prefix else key
-
-        # Get values from both configs
-        base_value = base_config.get(key) if base_config else None
-        modified_value = modified_config[key]
-
-        # Handle nested dicts recursively
-        if isinstance(modified_value, dict):
-            # Always recurse into nested dicts to extract primitive values
-            base_nested = base_value if isinstance(base_value, dict) else None
-            nested_diff = config_diff_to_dotted(base_nested, modified_value, full_key)
-            result.update(nested_diff)
-        elif isinstance(modified_value, (int, float, str, bool)):
-            # Only include primitive values that changed
-            if modified_value != base_value:
-                result[full_key] = modified_value
-        # Skip lists, complex objects, None, etc. - can't be CLI args
-
-    return result
-
-
 def validate_config_for_cli_generation(
     config: Dict[str, Any],
     exclude_prefixes: tuple = ("hparams.",),

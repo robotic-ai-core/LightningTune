@@ -1040,31 +1040,21 @@ class HPORunner:
             ... )
             >>> print(command)
         """
-        from .utils import extract_cli_args_from_config, format_cli_command, config_diff_to_dotted
+        from .utils import extract_cli_args_from_config, format_cli_command
         import copy
         import yaml
 
         # Load base config
         if isinstance(self.base_config, str):
             with open(self.base_config) as f:
-                base_config = yaml.safe_load(f)
+                config = yaml.safe_load(f)
         elif isinstance(self.base_config, dict):
-            base_config = copy.deepcopy(self.base_config)
+            config = copy.deepcopy(self.base_config)
         else:
-            base_config = {}
-
-        # Make a copy that will be modified by search_space
-        config = copy.deepcopy(base_config)
+            config = {}
 
         # Reconstruct config from best trial using standard 2-arg signature
         best_config = self.search_space(study.best_trial, config)
-
-        # Extract differences as dotted keys for CLI generation
-        dotted_config = config_diff_to_dotted(base_config, best_config)
-
-        # Add trial params for WandB hparams logging
-        for param_name, param_value in study.best_trial.params.items():
-            dotted_config[f"hparams.{param_name}"] = param_value
 
         # Determine base config path
         if base_config_path is None:
@@ -1075,7 +1065,7 @@ class HPORunner:
 
         # Extract CLI arguments
         cli_args = extract_cli_args_from_config(
-            dotted_config,
+            best_config,
             base_config_path=base_config_path,
             extra_args=extra_args,
             excluded_params=excluded_params or set(),
