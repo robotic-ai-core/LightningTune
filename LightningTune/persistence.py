@@ -153,19 +153,31 @@ def save_study_to_wandb(
             logger.error(f"Failed to verify saved study: {e}")
             return False
 
-    run = wandb.init(project=wandb_project, job_type="hpo_checkpoint")
-    artifact = wandb.Artifact(f"{study_name}_checkpoint", type="optuna_study")
-    # Backward compatibility: some consumers expect different internal names
-    # Always add as study.pkl, but also add a duplicate with legacy name if needed
-    artifact.add_file(tmp.name, name="study.pkl")
-    artifact.metadata = {
-        "total_finished_trials": trials_completed,
-    }
-    logged_artifact = run.log_artifact(artifact, aliases=["latest"])
-    logged_artifact.wait()
-    run.finish()
-    logger.info(f"✅ Study saved to WandB: {study_name}_checkpoint (v{trials_completed})")
-    return True
+    run = None
+    try:
+        logger.info(f"🌐 Uploading checkpoint to WandB project '{wandb_project}'...")
+        run = wandb.init(project=wandb_project, job_type="hpo_checkpoint")
+        artifact = wandb.Artifact(f"{study_name}_checkpoint", type="optuna_study")
+        # Backward compatibility: some consumers expect different internal names
+        # Always add as study.pkl, but also add a duplicate with legacy name if needed
+        artifact.add_file(tmp.name, name="study.pkl")
+        artifact.metadata = {
+            "total_finished_trials": trials_completed,
+        }
+        logged_artifact = run.log_artifact(artifact, aliases=["latest"])
+        logged_artifact.wait()
+        run.finish()
+        logger.info(f"✅ Study saved to WandB: {study_name}_checkpoint (v{trials_completed})")
+        return True
+    except Exception as e:
+        logger.error(f"❌ WandB upload failed: {e}")
+        logger.error(f"   Check your WandB API key and network connection")
+        if run is not None:
+            try:
+                run.finish()
+            except Exception:
+                pass
+        return False
 
 
 def load_study_from_wandb(

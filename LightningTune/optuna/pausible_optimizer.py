@@ -406,38 +406,50 @@ class PausibleOptunaOptimizer:
                 return False
             
             # Upload to WandB
-            run = wandb.init(
-                project=self.wandb_project,
-                job_type="hpo_checkpoint",
-            )
-            artifact = wandb.Artifact(
-                f"{self.study_name}_checkpoint",
-                type="optuna_study"
-            )
-            artifact.add_file(tmp.name, name="study.pkl")
-            artifact.metadata = {
-                "total_finished_trials": trials_completed,
-                "completed_trials": len([t for t in study.trials 
-                                        if t.state == optuna.trial.TrialState.COMPLETE]),
-                "pruned_trials": len([t for t in study.trials 
-                                    if t.state == optuna.trial.TrialState.PRUNED]),
-                "failed_trials": len([t for t in study.trials 
-                                    if t.state == optuna.trial.TrialState.FAIL]),
-                "best_value": study.best_value if study.best_trial else None,
-                "best_trial_number": study.best_trial.number if study.best_trial else None,
-            }
-            # Log and wait for artifact to upload
-            logged_artifact = run.log_artifact(artifact, aliases=["latest"])
-            
-            # IMPORTANT: Use wait() to ensure artifact uploads before we exit
-            # This blocks until the artifact is fully uploaded to WandB
-            logged_artifact.wait()
-            
-            # Now we can safely finish the run
-            run.finish()
-            
-            logger.info(f"✅ Study saved to WandB: {self.study_name}_checkpoint (v{trials_completed})")
-            return True
+            run = None
+            try:
+                logger.info(f"🌐 Uploading checkpoint to WandB project '{self.wandb_project}'...")
+                run = wandb.init(
+                    project=self.wandb_project,
+                    job_type="hpo_checkpoint",
+                )
+                artifact = wandb.Artifact(
+                    f"{self.study_name}_checkpoint",
+                    type="optuna_study"
+                )
+                artifact.add_file(tmp.name, name="study.pkl")
+                artifact.metadata = {
+                    "total_finished_trials": trials_completed,
+                    "completed_trials": len([t for t in study.trials
+                                            if t.state == optuna.trial.TrialState.COMPLETE]),
+                    "pruned_trials": len([t for t in study.trials
+                                        if t.state == optuna.trial.TrialState.PRUNED]),
+                    "failed_trials": len([t for t in study.trials
+                                        if t.state == optuna.trial.TrialState.FAIL]),
+                    "best_value": study.best_value if study.best_trial else None,
+                    "best_trial_number": study.best_trial.number if study.best_trial else None,
+                }
+                # Log and wait for artifact to upload
+                logged_artifact = run.log_artifact(artifact, aliases=["latest"])
+
+                # IMPORTANT: Use wait() to ensure artifact uploads before we exit
+                # This blocks until the artifact is fully uploaded to WandB
+                logged_artifact.wait()
+
+                # Now we can safely finish the run
+                run.finish()
+
+                logger.info(f"✅ Study saved to WandB: {self.study_name}_checkpoint (v{trials_completed})")
+                return True
+            except Exception as e:
+                logger.error(f"❌ WandB upload failed: {e}")
+                logger.error(f"   Check your WandB API key and network connection")
+                if run is not None:
+                    try:
+                        run.finish()
+                    except Exception:
+                        pass
+                return False
     
     @staticmethod
     def load_saved_session(
