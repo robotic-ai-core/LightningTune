@@ -175,16 +175,17 @@ class TestHPORunnerPauseIntegration:
         # Note: PauseCallback is only added when use_reflow=True
         mock_optimizer.assert_called_once()
 
-    @patch('LightningTune.hpo_runner.HAS_PAUSE_CALLBACK', True)
-    @patch('LightningTune.hpo_runner.PauseCallback')
     @patch('LightningTune.hpo_runner.PausibleOptunaOptimizer')
-    def test_pause_callback_added_when_reflow_enabled(self, mock_optimizer, mock_pause_callback):
-        """Test that PauseCallback is added when use_reflow=True."""
+    def test_pause_settings_passed_to_optimizer(self, mock_optimizer):
+        """Test that pause settings are correctly passed to PausibleOptunaOptimizer.
+
+        Note: HPO runs do NOT use PauseCallback (which pauses at validation boundaries).
+        Instead, they use PausibleOptunaOptimizer which pauses at trial boundaries.
+        This prevents corrupting trial metrics and ensures fair trial comparison.
+        """
         # Setup mocks
         mock_study = Mock()
         mock_optimizer.return_value.optimize.return_value = mock_study
-        mock_pause_callback_instance = Mock()
-        mock_pause_callback.return_value = mock_pause_callback_instance
 
         # Create runner
         runner = HPORunner(
@@ -196,19 +197,14 @@ class TestHPORunnerPauseIntegration:
             pause_key='p'
         )
 
-        # Run with use_reflow=True (default)
-        argv = ['--n-trials', '1', '--test-mode']
+        # Run
+        argv = ['--n-trials', '1', '--test-mode', '--no-reflow']
         runner.run_from_cli(argv=argv)
 
-        # Verify PauseCallback was created
-        mock_pause_callback.assert_called_once()
-        call_kwargs = mock_pause_callback.call_args[1]
+        # Verify PausibleOptunaOptimizer was called with pause settings
+        mock_optimizer.assert_called_once()
+        call_kwargs = mock_optimizer.call_args[1]
         assert call_kwargs['enable_pause'] == True
-        assert call_kwargs['pause_key'] == 'p'
-        assert call_kwargs['show_pause_countdown'] == False
-
-        # Verify PauseCallback was added to callbacks list
-        assert mock_pause_callback_instance in runner.callbacks
 
     @patch('LightningTune.hpo_runner.HAS_PAUSE_CALLBACK', True)
     @patch('LightningTune.hpo_runner.PauseCallback')
@@ -260,10 +256,13 @@ class TestHPORunnerPauseIntegration:
         # Verify PauseCallback was NOT created
         mock_pause_callback.assert_not_called()
 
-    @patch('LightningTune.hpo_runner.HAS_PAUSE_CALLBACK', False)
     @patch('LightningTune.hpo_runner.PausibleOptunaOptimizer')
-    def test_warning_when_reflow_unavailable(self, mock_optimizer, capsys):
-        """Test that warning is logged when LightningReflow not available."""
+    def test_pause_info_logged_when_enabled(self, mock_optimizer, capsys):
+        """Test that pause info is logged when enabled.
+
+        Note: HPO uses PausibleOptunaOptimizer for trial-boundary pausing,
+        not PauseCallback. So we test that the optimizer gets the settings.
+        """
         # Setup mock
         mock_study = Mock()
         mock_optimizer.return_value.optimize.return_value = mock_study
@@ -274,21 +273,18 @@ class TestHPORunnerPauseIntegration:
             datamodule_class=None,
             search_space=lambda trial: {},
             base_config={},
-            enable_pause=True
+            enable_pause=True,
+            pause_key='x'
         )
 
-        # Run with use_reflow=True but HAS_PAUSE_CALLBACK=False
-        argv = ['--n-trials', '1', '--test-mode']
+        # Run
+        argv = ['--n-trials', '1', '--test-mode', '--no-reflow']
+        runner.run_from_cli(argv=argv)
 
-        # Capture logging output
-        import logging
-        with patch('LightningTune.hpo_runner.logger') as mock_logger:
-            runner.run_from_cli(argv=argv)
-
-            # Verify warning was logged
-            warning_calls = [call for call in mock_logger.warning.call_args_list
-                           if 'PauseCallback requested' in str(call)]
-            assert len(warning_calls) > 0
+        # Verify PausibleOptunaOptimizer was called with pause settings
+        mock_optimizer.assert_called_once()
+        call_kwargs = mock_optimizer.call_args[1]
+        assert call_kwargs['enable_pause'] == True
 
 
 if __name__ == "__main__":

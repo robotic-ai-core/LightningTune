@@ -254,10 +254,14 @@ class PausibleOptunaOptimizer:
                 self.keyboard_handler = None
     
 
-    def _on_key_press(self, key: str):
-        """Callback from KeyboardHandlerService (invoked from background thread).
+    def _handle_key_input(self, key: str) -> bool:
+        """Handle a key press with thread-safe state management.
 
-        This method is thread-safe using self._pause_lock to protect state mutations.
+        This is the core key handling logic used by both the KeyboardHandlerService
+        callback and the polling thread.
+
+        Returns:
+            True if the key was handled, False otherwise.
         """
         skey = key.lower()
 
@@ -273,28 +277,20 @@ class PausibleOptunaOptimizer:
                 msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
                 print(msg)
                 logger.info(msg)
-                try:
-                    with open("/tmp/hpo_pause.log", "a") as f:
-                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
-                        f.flush()
-                except:
-                    pass
+                self._log_to_pause_file(msg)
             elif not current_state and last_state:
                 msg = "\n❌ Pause CANCELLED ('p' pressed again)"
                 print(msg)
                 logger.info(msg)
-                try:
-                    with open("/tmp/hpo_pause.log", "a") as f:
-                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
-                        f.flush()
-                except:
-                    pass
+                self._log_to_pause_file(msg)
+            return True
         elif skey == 'q':
             with self._pause_lock:
                 self._quit_after_current = True
             msg = "\n🛑 Quit requested ('q' pressed). Will stop after current trial."
             print(msg)
             logger.info(msg)
+            return True
         elif key == "\x03":  # Ctrl+C in cbreak mode
             with self._pause_lock:
                 self._pause_requested = True
@@ -302,6 +298,24 @@ class PausibleOptunaOptimizer:
             msg = "\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary..."
             print(msg)
             logger.info(msg)
+            return True
+        return False
+
+    def _log_to_pause_file(self, msg: str) -> None:
+        """Log message to pause log file for visibility."""
+        try:
+            with open("/tmp/hpo_pause.log", "a") as f:
+                f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
+                f.flush()
+        except:
+            pass
+
+    def _on_key_press(self, key: str):
+        """Callback from KeyboardHandlerService (invoked from background thread).
+
+        This method is thread-safe using self._pause_lock to protect state mutations.
+        """
+        self._handle_key_input(key)
 
     def _verify_study_integrity(self, study: optuna.Study) -> tuple[bool, int, str]:
         """
@@ -1268,11 +1282,11 @@ class PausibleOptunaOptimizer:
                     logger.debug(f"[PAUSE DEBUG] KeyboardService path: returning {result}")
                 return result
 
-        # If background polling is active, just return current flag
+        # If background polling is active, use lock for thread-safe access
         if getattr(self, '_polling_active', False):
-            result = self._pause_requested
-            if result:
-                logger.debug(f"[PAUSE DEBUG] Polling path: returning {result}")
+            with self._pause_lock:
+                result = self._pause_requested
+            logger.debug(f"[PAUSE DEBUG] Polling path: _pause_requested={result}")
             return result
 
         # If we reach here without _use_keyboard_service or _polling_active,
@@ -1492,50 +1506,12 @@ class PausibleOptunaOptimizer:
 
     def _pause_input_loop(self) -> None:
         """Continuously poll keyboard handler for immediate schedule/cancel feedback."""
-        last_state = self._pause_requested
         while getattr(self, '_polling_active', False):
             try:
                 if self.keyboard_handler and hasattr(self.keyboard_handler, 'get_key'):
                     key = self.keyboard_handler.get_key()
                     if key:
-                        raw = str(key)
-                        skey = raw.lower()
-                        if skey == 'p':
-                            # Toggle pause state
-                            self._pause_requested = not self._pause_requested
-                            if self._pause_requested and not last_state:
-                                msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
-                                print(msg)  # Print directly so it shows up even with progress bar
-                                logger.info(msg)
-                                # Also log to file for visibility (progress bar may hide terminal output)
-                                try:
-                                    with open("/tmp/hpo_pause.log", "a") as f:
-                                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
-                                        f.flush()
-                                except:
-                                    pass
-                            elif (not self._pause_requested) and last_state:
-                                msg = "\n❌ Pause CANCELLED ('p' pressed again)"
-                                print(msg)  # Print directly so it shows up even with progress bar
-                                logger.info(msg)
-                                try:
-                                    with open("/tmp/hpo_pause.log", "a") as f:
-                                        f.write(f"[{time.strftime('%H:%M:%S')}] {msg.strip()}\n")
-                                        f.flush()
-                                except:
-                                    pass
-                            last_state = self._pause_requested
-                        elif skey == 'q':
-                            self._quit_after_current = True
-                            msg = "\n🛑 Quit requested ('q' pressed). Will stop after current trial."
-                            print(msg)  # Print directly so it shows up even with progress bar
-                            logger.info(msg)
-                        elif raw == "\x03":  # Ctrl+C in cbreak mode
-                            self._pause_requested = True
-                            self.should_pause = True
-                            msg = "\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary..."
-                            print(msg)  # Print directly so it shows up even with progress bar
-                            logger.info(msg)
+                        self._handle_key_input(str(key))
             except Exception:
                 # Ignore read errors
                 pass
