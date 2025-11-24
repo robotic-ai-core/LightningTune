@@ -102,7 +102,6 @@ class PausibleOptunaOptimizer:
         save_every_n_trials: int = 10,
         restart_on_save: bool = False,
         enable_pause: bool = True,
-        use_reflow: bool = True,  # Default to Reflow for testability and robust IO
         # New enhanced features
         override_config: Optional[Union[str, Dict[str, Any]]] = None,
         persist_args: bool = True,
@@ -127,7 +126,6 @@ class PausibleOptunaOptimizer:
             pruner_name: Name of Optuna pruner to use
             save_every_n_trials: Save checkpoint every N trials
             enable_pause: Whether to enable 'p' key pause functionality
-            use_reflow: Whether to use LightningReflow for better environment setup and compilation
             override_config: Optional override configuration to layer on top of base_config
             persist_args: Whether to automatically persist command-line arguments
             args: Parsed command-line arguments to persist (if persist_args=True)
@@ -168,7 +166,6 @@ class PausibleOptunaOptimizer:
         self.save_every_n_trials = save_every_n_trials
         self.restart_on_save = restart_on_save
         self.enable_pause = enable_pause
-        self.use_reflow = use_reflow
         self.test_mode = test_mode
         
         # New enhanced features
@@ -764,16 +761,9 @@ class PausibleOptunaOptimizer:
 
         # Create optimizer (use Reflow version if requested)
         # Backward compatibility: disable Reflow if model_class is not a LightningModule type
-        try:
-            if self.use_reflow:
-                is_type = isinstance(self.model_class, type)
-                from lightning.pytorch import LightningModule as _LM
-                if (not is_type) or (not issubclass(self.model_class, _LM)):
-                    self.use_reflow = False
-                    logger.info("⚠️  Disabling Reflow: model_class is not a LightningModule type")
-        except Exception:
-            pass
-        OptimizerClass = ReflowOptunaDrivenOptimizer if self.use_reflow else OptunaDrivenOptimizer
+        # FIXED: Always use OptunaDrivenOptimizer to ensure periodic saves work
+        # ReflowOptunaDrivenOptimizer was missing the save_every logic
+        OptimizerClass = OptunaDrivenOptimizer
         # Merge persistent overrides and runtime-only overrides for the optimizer
         _config_overrides_for_optimizer = dict(config_overrides or {})
         if runtime_overrides:
