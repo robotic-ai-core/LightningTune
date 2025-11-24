@@ -1,0 +1,74 @@
+_wandb:
+    value:
+        cli_version: 0.22.1
+        e:
+            rz1x6rboeaf7l3rlurykke3w8y2f2nq6:
+                args:
+                    - tests/
+                    - -v
+                    - --tb=short
+                cpu_count: 12
+                cpu_count_logical: 24
+                cudaVersion: "12.9"
+                disk:
+                    /:
+                        total: "980122034176"
+                        used: "660439887872"
+                email: neil.c.tan@gmail.com
+                executable: /home/neil/.pyenv/versions/3.10.14/envs/world/bin/python
+                git:
+                    commit: 9e8ce89af4f64cdde59cdd615a6fd3e60569573a
+                    remote: git@github.com:robotic-ai-core/LightningTune.git
+                gpu: NVIDIA GeForce RTX 3090
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-ceb02df1-c226-6eae-1805-991c1bf36ed5
+                host: FirePillar
+                memory:
+                    total: "67323334656"
+                os: Linux-6.14.0-33-generic-x86_64-with-glibc2.39
+                program: /home/neil/.pyenv/versions/world/bin/pytest
+                python: CPython 3.10.14
+                root: /home/neil/code/modelling/ProtoWorld/external/LightningTune
+                startedAt: "2025-11-24T18:38:07.053114Z"
+                writerId: rz1x6rboeaf7l3rlurykke3w8y2f2nq6
+        m: []
+        python_version: 3.10.14
+        t:
+            "1":
+                - 1
+                - 9
+                - 11
+                - 35
+                - 41
+                - 49
+                - 50
+                - 63
+                - 71
+                - 83
+                - 103
+                - 106
+            "2":
+                - 1
+                - 9
+                - 11
+                - 35
+                - 41
+                - 49
+                - 50
+                - 63
+                - 71
+                - 83
+                - 103
+                - 106
+            "3":
+                - 2
+            "4": 3.10.14
+            "5": 0.22.1
+            "6": 4.56.2
+            "12": 0.22.1
+            "13": linux-x86_64

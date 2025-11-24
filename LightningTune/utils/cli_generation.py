@@ -281,15 +281,23 @@ def format_best_trial_results(
     lines.append(header)
     lines.append(separator)
     lines.append("")
-    lines.append(f"Best trial: #{study.best_trial.number}")
-    lines.append(f"Best validation loss: {study.best_value:.6f}")
-    lines.append("")
-    lines.append("Best hyperparameters:")
-    lines.append("-" * width)
 
-    for key, value in study.best_params.items():
-        lines.append(f"  {key:30s} = {value}")
+    # Check if there are any completed trials
+    try:
+        best_trial = study.best_trial
+        lines.append(f"Best trial: #{best_trial.number}")
+        lines.append(f"Best validation loss: {study.best_value:.6f}")
+        lines.append("")
+        lines.append("Best hyperparameters:")
+        lines.append("-" * width)
 
-    lines.append(separator)
+        for key, value in study.best_params.items():
+            lines.append(f"  {key:30s} = {value}")
+
+        lines.append(separator)
+    except ValueError:
+        # No completed trials yet
+        lines.append("No trials completed successfully yet.")
+        lines.append(separator)
 
     return "\n".join(lines)
