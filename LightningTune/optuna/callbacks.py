@@ -376,9 +376,19 @@ class PruneOnExceptionCallback(Callback):
         # Preserve Ctrl+C by re-raising immediately so it propagates out of Lightning
         if isinstance(err, KeyboardInterrupt):
             raise err
+
+        # Log the full exception details for debugging
+        import traceback
+        logger.error(f"Trial {self.trial.number} encountered exception:")
+        logger.error(f"Exception type: {type(err).__name__}")
+        logger.error(f"Exception message: {str(err)}")
+        logger.error("Full traceback:")
+        logger.error(traceback.format_exc())
+
         # Mark and prune
         try:
             self.trial.set_user_attr('failed_reason', f'exception:{type(err).__name__}')
+            self.trial.set_user_attr('exception_message', str(err))
         except Exception:
             pass
         raise optuna.TrialPruned(f"Pruned due to exception: {type(err).__name__}")

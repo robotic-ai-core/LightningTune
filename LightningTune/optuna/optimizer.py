@@ -23,12 +23,48 @@ from optuna.pruners import BasePruner, MedianPruner, NopPruner
 import lightning as L
 from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.cli import instantiate_class
 
 from .search_space import OptunaSearchSpace
 from .callbacks import OptunaPruningCallback
 from ..utils.config_utils import apply_dotted_updates, load_config
 
 logger = logging.getLogger(__name__)
+
+
+def _instantiate_nested_classes(config: Any) -> Any:
+    """
+    Recursively instantiate classes from config dicts with class_path.
+
+    Args:
+        config: Config value (can be dict, list, or primitive)
+
+    Returns:
+        Instantiated value with nested classes resolved
+    """
+    if isinstance(config, dict):
+        # Check if this dict represents a class to instantiate
+        if 'class_path' in config:
+            # Get init_args (may be nested configs themselves)
+            init_args = config.get('init_args', {})
+            # Recursively instantiate nested args
+            instantiated_init_args = _instantiate_nested_classes(init_args)
+            # Create updated config with instantiated args
+            updated_config = {
+                'class_path': config['class_path'],
+                'init_args': instantiated_init_args
+            }
+            # Instantiate this class with the updated config
+            return instantiate_class((), updated_config)
+        else:
+            # Regular dict - recursively process values
+            return {k: _instantiate_nested_classes(v) for k, v in config.items()}
+    elif isinstance(config, list):
+        # Recursively process list elements
+        return [_instantiate_nested_classes(item) for item in config]
+    else:
+        # Primitive value - return as is
+        return config
 
 
 class OptunaDrivenOptimizer:
@@ -247,9 +283,14 @@ class OptunaDrivenOptimizer:
                 data_args = data_config['init_args']
             else:
                 data_args = data_config
-                
+
+            # Instantiate any nested classes in model_args and data_args
+            # This handles cases like dynamics_model with class_path config
+            model_args = _instantiate_nested_classes(model_args)
+            data_args = _instantiate_nested_classes(data_args)
+
             model = self.model_class(**model_args)
-            
+
             if self.datamodule_class:
                 datamodule = self.datamodule_class(**data_args)
             else:
