@@ -1,0 +1,312 @@
+"""
+Test that the optimization loop actually runs the correct number of trials.
+Uses mocked trials to verify the loop behavior.
+"""
+
+import pytest
+import optuna
+from unittest.mock import patch, MagicMock
+
+
+class TestActualTrialExecution:
+    """Test actual trial execution count."""
+
+    def test_100_trials_with_save_every_3(self):
+        """
+        Reproduce the bug: n_trials=100, save_every=3 should run 100 trials.
+
+        Bug report: User ran with --n-trials 100 but only 3 trials executed.
+        """
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        trial_count = [0]
+
+        def simple_objective(trial):
+            trial_count[0] += 1
+            return trial_count[0] * 0.001
+
+        # Create optimizer with save_every=3 (the suspected culprit)
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial: {},
+            model_class=None,
+            datamodule_class=None,
+            save_every_n_trials=3,
+            wandb_project=None,  # No actual WandB
+        )
+
+        # Patch to use our simple objective
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+            mock_instance = MagicMock()
+            mock_instance.create_objective.return_value = simple_objective
+            MockOpt.return_value = mock_instance
+
+            # Run with n_trials=100
+            study = optimizer.optimize(n_trials=100)
+
+            # THE KEY ASSERTION
+            assert trial_count[0] == 100, \
+                f"BUG REPRODUCED: Expected 100 trials but only {trial_count[0]} ran!"
+            assert optimizer.total_trials_completed == 100
+
+    def test_10_trials_basic(self):
+        """Basic test: 10 trials should run 10 times."""
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        trial_count = [0]
+
+        def simple_objective(trial):
+            trial_count[0] += 1
+            return trial_count[0] * 0.01
+
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial: {},
+            model_class=None,
+            datamodule_class=None,
+            save_every_n_trials=3,
+        )
+
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+            mock_instance = MagicMock()
+            mock_instance.create_objective.return_value = simple_objective
+            MockOpt.return_value = mock_instance
+
+            study = optimizer.optimize(n_trials=10)
+
+            assert trial_count[0] == 10, f"Expected 10 trials, got {trial_count[0]}"
+            assert optimizer.total_trials_completed == 10
+
+    def test_save_every_equals_n_trials(self):
+        """Test when save_every equals n_trials (both 3)."""
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        trial_count = [0]
+
+        def simple_objective(trial):
+            trial_count[0] += 1
+            return trial_count[0] * 0.01
+
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial: {},
+            model_class=None,
+            datamodule_class=None,
+            save_every_n_trials=3,
+        )
+
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+            mock_instance = MagicMock()
+            mock_instance.create_objective.return_value = simple_objective
+            MockOpt.return_value = mock_instance
+
+            # This is the suspicious case - save_every=3 and n_trials=3
+            study = optimizer.optimize(n_trials=3)
+
+            assert trial_count[0] == 3, f"Expected 3 trials, got {trial_count[0]}"
+
+    def test_with_wandb_project_set(self):
+        """Test with wandb_project set (mimics user's scenario)."""
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        trial_count = [0]
+
+        def simple_objective(trial):
+            trial_count[0] += 1
+            return trial_count[0] * 0.001
+
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial: {},
+            model_class=None,
+            datamodule_class=None,
+            save_every_n_trials=3,
+            wandb_project="test_project",  # Set like user's command
+        )
+
+        # Mock both the optimizer and WandB saves
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+            with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_wandb') as mock_save:
+                mock_save.return_value = True  # Simulate successful saves
+
+                mock_instance = MagicMock()
+                mock_instance.create_objective.return_value = simple_objective
+                MockOpt.return_value = mock_instance
+
+                study = optimizer.optimize(n_trials=100)
+
+                assert trial_count[0] == 100, \
+                    f"With wandb_project set: Expected 100 trials, got {trial_count[0]}"
+
+
+    def test_hpo_runner_e2e_100_trials(self):
+        """End-to-end test: HPORunner with n_trials=100 should run 100 trials."""
+        from LightningTune.hpo_runner import HPORunner
+        from lightning.pytorch import LightningModule
+
+        trial_count = [0]
+
+        def simple_objective(trial):
+            trial_count[0] += 1
+            return trial_count[0] * 0.001
+
+        class DummyModel(LightningModule):
+            def __init__(self, **kwargs):
+                super().__init__()
+            def training_step(self, batch, batch_idx):
+                return {"loss": 0.1}
+            def configure_optimizers(self):
+                return None
+
+        runner = HPORunner(
+            model_class=DummyModel,
+            datamodule_class=None,
+            search_space=lambda trial: {},
+            base_config={},
+        )
+
+        # Patch the optimizer class to inject our objective
+        with patch('LightningTune.hpo_runner.PausibleOptunaOptimizer') as MockPausible:
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+                # Set up the mock chain
+                mock_opt_instance = MagicMock()
+                mock_opt_instance.create_objective.return_value = simple_objective
+                MockOpt.return_value = mock_opt_instance
+
+                # Create a real PausibleOptunaOptimizer but with mocked underlying optimizer
+                from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+                def create_real_optimizer(*args, **kwargs):
+                    return PausibleOptunaOptimizer(*args, **kwargs)
+
+                MockPausible.side_effect = create_real_optimizer
+
+                # Run with exact user command args
+                argv = ['--n-trials', '100', '--wandb', 'test_project', '--save-every', '3',
+                        '--test-mode', '--no-reflow']
+
+                with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_wandb') as mock_save:
+                    mock_save.return_value = True
+                    study = runner.run_from_cli(argv=argv)
+
+                # THE KEY ASSERTION
+                assert trial_count[0] == 100, \
+                    f"HPORunner E2E: Expected 100 trials but only {trial_count[0]} ran!"
+
+    def test_exact_user_scenario(self):
+        """
+        Exact reproduction of user's scenario:
+        python scripts/world_model_hpo.py --n-trials 100 --wandb pusht_hpo_l1_prenorm --trial-steps 40000
+        """
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+
+        trial_count = [0]
+
+        def simple_objective(trial):
+            trial_count[0] += 1
+            return trial_count[0] * 0.001
+
+        # Exact user scenario: wandb project set, save_every=3 (default)
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial: {},
+            model_class=None,
+            datamodule_class=None,
+            save_every_n_trials=3,  # Default value
+            wandb_project="pusht_hpo_l1_prenorm",  # User's project
+            study_name="world_model_pusht_hpo",  # Default study name
+        )
+
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+            with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_wandb') as mock_save:
+                with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_local') as mock_local:
+                    mock_save.return_value = True
+                    mock_local.return_value = True
+
+                    mock_instance = MagicMock()
+                    mock_instance.create_objective.return_value = simple_objective
+                    MockOpt.return_value = mock_instance
+
+                    # Run with n_trials=100
+                    study = optimizer.optimize(n_trials=100)
+
+                    # Verify all 100 trials ran
+                    assert trial_count[0] == 100, \
+                        f"User scenario: Expected 100 trials but only {trial_count[0]} ran!"
+                    assert optimizer.total_trials_completed == 100
+
+                    # Verify saves happened at correct intervals (every 3 trials)
+                    # With 100 trials and save_every=3, we should have 33 saves
+                    expected_saves = 100 // 3
+                    assert mock_save.call_count == expected_saves, \
+                        f"Expected {expected_saves} WandB saves, got {mock_save.call_count}"
+
+    def test_reflow_path_with_real_lightningmodule(self):
+        """
+        Test the Reflow path that's used in real execution.
+
+        When a real LightningModule is passed, use_reflow=True stays enabled,
+        and ReflowOptunaDrivenOptimizer is used instead of OptunaDrivenOptimizer.
+        This test ensures both paths work correctly.
+        """
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+        from lightning.pytorch import LightningModule
+
+        trial_count = [0]
+
+        def simple_objective(trial):
+            trial_count[0] += 1
+            return trial_count[0] * 0.001
+
+        # Create a real LightningModule class to trigger Reflow path
+        class DummyModel(LightningModule):
+            def __init__(self, **kwargs):
+                super().__init__()
+            def training_step(self, batch, batch_idx):
+                return {"loss": 0.1}
+            def configure_optimizers(self):
+                return None
+
+        # User scenario with real model class
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial: {},
+            model_class=DummyModel,  # Real LightningModule triggers Reflow
+            datamodule_class=None,
+            save_every_n_trials=3,
+            wandb_project="pusht_hpo_l1_prenorm",
+            study_name="world_model_pusht_hpo",
+        )
+
+        # Patch BOTH optimizer classes to ensure we catch whichever is used
+        with patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer') as MockReflow:
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+                with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_wandb') as mock_save:
+                    with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_local') as mock_local:
+                        mock_save.return_value = True
+                        mock_local.return_value = True
+
+                        # Set up both mocks
+                        mock_reflow_instance = MagicMock()
+                        mock_reflow_instance.create_objective.return_value = simple_objective
+                        MockReflow.return_value = mock_reflow_instance
+
+                        mock_opt_instance = MagicMock()
+                        mock_opt_instance.create_objective.return_value = simple_objective
+                        MockOpt.return_value = mock_opt_instance
+
+                        # Run with n_trials=100
+                        study = optimizer.optimize(n_trials=100)
+
+                        # Verify all 100 trials ran
+                        assert trial_count[0] == 100, \
+                            f"Reflow path: Expected 100 trials but only {trial_count[0]} ran!"
+                        assert optimizer.total_trials_completed == 100
+
+                        # Verify Reflow was used (not regular optimizer)
+                        assert MockReflow.called, "ReflowOptunaDrivenOptimizer should be used with real LightningModule"
+                        assert not MockOpt.called, "OptunaDrivenOptimizer should NOT be used with real LightningModule"
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, '-v'])

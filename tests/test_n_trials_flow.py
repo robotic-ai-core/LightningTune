@@ -163,12 +163,16 @@ class TestNTrialsFlow:
             datamodule_class=None,
             save_every_n_trials=3,
         )
-        optimizer._create_objective = lambda *a, **kw: counting_objective
 
-        study = optimizer.optimize(n_trials=10)
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+            mock_instance = MagicMock()
+            mock_instance.create_objective.return_value = counting_objective
+            MockOpt.return_value = mock_instance
 
-        assert trial_count[0] == 10, f"Expected 10 trials, got {trial_count[0]}"
-        assert optimizer.total_trials_completed == 10
+            study = optimizer.optimize(n_trials=10)
+
+            assert trial_count[0] == 10, f"Expected 10 trials, got {trial_count[0]}"
+            assert optimizer.total_trials_completed == 10
 
     def test_n_trials_100_with_save_every_3(self):
         """Test that n_trials=100 with save_every=3 runs all 100 trials."""
@@ -187,16 +191,20 @@ class TestNTrialsFlow:
             datamodule_class=None,
             save_every_n_trials=3,  # This should NOT limit trials to 3
         )
-        optimizer._create_objective = lambda *a, **kw: counting_objective
 
-        # Run with n_trials=100
-        study = optimizer.optimize(n_trials=100)
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+            mock_instance = MagicMock()
+            mock_instance.create_objective.return_value = counting_objective
+            MockOpt.return_value = mock_instance
 
-        # Should have run all 100 trials
-        assert trial_count[0] == 100, \
-            f"Expected 100 trials but only {trial_count[0]} ran. " \
-            f"Bug: save_every_n_trials (3) may be confused with n_trials."
-        assert optimizer.total_trials_completed == 100
+            # Run with n_trials=100
+            study = optimizer.optimize(n_trials=100)
+
+            # Should have run all 100 trials
+            assert trial_count[0] == 100, \
+                f"Expected 100 trials but only {trial_count[0]} ran. " \
+                f"Bug: save_every_n_trials (3) may be confused with n_trials."
+            assert optimizer.total_trials_completed == 100
 
     def test_fresh_start_n_trials_not_from_checkpoint(self):
         """Test that fresh start uses CLI n_trials, not some cached value."""

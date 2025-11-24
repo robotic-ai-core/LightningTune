@@ -1158,7 +1158,8 @@ class PausibleOptunaOptimizer:
         else:
             logger.info(f"\n{'='*60}")
             logger.info(f"✨ OPTIMIZATION COMPLETE!")
-            logger.info(f"Total trials run: {self.total_trials_completed}/{n_trials} ({100.0:.1f}%)")
+            percentage = (self.total_trials_completed / n_trials * 100) if n_trials > 0 else 0
+            logger.info(f"Total trials run: {self.total_trials_completed}/{n_trials} ({percentage:.1f}%)")
             logger.info(f"{'='*60}")
 
         # Always mirror a local checkpoint at the end (even if 0 finished trials)
