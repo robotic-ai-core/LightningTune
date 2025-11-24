@@ -510,6 +510,9 @@ class PausibleOptunaOptimizer:
         Returns:
             Optuna study with results
         """
+        # Debug: Log n_trials value at entry
+        logger.info(f"[DEBUG] optimize() called with n_trials={n_trials}, resume_from={resume_from}")
+
         # Handle automatic argument persistence
         if self.persist_args and self.args:
             args_dict = self._extract_persistable_args()
@@ -876,6 +879,9 @@ class PausibleOptunaOptimizer:
             trials_in_batch = 0
             last_checkpoint_trial_count = self.total_trials_completed
         
+        # Debug: Log n_trials value at loop start
+        logger.info(f"[DEBUG] Starting optimization loop: total_trials_completed={self.total_trials_completed}, n_trials={n_trials}")
+
         while self.total_trials_completed < n_trials and not self.should_pause:
             # Record number of finished trials (COMPLETE + PRUNED) before this trial
             trials_before = len([t for t in study.trials 

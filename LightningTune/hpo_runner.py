@@ -927,6 +927,9 @@ class HPORunner:
 
         # Run optimization with crash logging protection
         try:
+            # Debug: Log n_trials value before calling optimize
+            logger.info(f"[DEBUG] Calling optimizer.optimize with n_trials={self.args.n_trials}")
+
             study = optimizer.optimize(
                 n_trials=self.args.n_trials,
                 resume_from=self.args.resume_from,
