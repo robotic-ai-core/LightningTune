@@ -759,6 +759,9 @@ class PausibleOptunaOptimizer:
         # Extract direction to avoid duplicate argument
         direction = opt_kwargs.pop("direction", "minimize")
 
+        # Remove use_reflow if present (no longer used)
+        opt_kwargs.pop("use_reflow", None)
+
         # Create optimizer (use Reflow version if requested)
         # Backward compatibility: disable Reflow if model_class is not a LightningModule type
         # FIXED: Always use OptunaDrivenOptimizer to ensure periodic saves work
