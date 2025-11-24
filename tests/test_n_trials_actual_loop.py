@@ -307,6 +307,72 @@ class TestActualTrialExecution:
                         assert MockReflow.called, "ReflowOptunaDrivenOptimizer should be used with real LightningModule"
                         assert not MockOpt.called, "OptunaDrivenOptimizer should NOT be used with real LightningModule"
 
+    def test_resume_command_printed_on_pause(self):
+        """
+        Test that the correct resume command is printed when optimization is paused.
+        """
+        from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
+        import sys
+
+        trial_count = [0]
+
+        def simple_objective(trial):
+            trial_count[0] += 1
+            return trial_count[0] * 0.001
+
+        # Simulate original argv
+        original_argv = sys.argv.copy()
+        sys.argv = ['scripts/world_model_hpo.py', '--n-trials', '100',
+                    '--wandb', 'test_project', '--study-name', 'my_study',
+                    '--trial-steps', '40000']
+
+        try:
+            optimizer = PausibleOptunaOptimizer(
+                base_config={},
+                search_space=lambda trial: {},
+                model_class=None,
+                datamodule_class=None,
+                save_every_n_trials=3,
+                wandb_project="test_project",
+                study_name="my_study",
+            )
+
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as MockOpt:
+                with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_wandb') as mock_save:
+                    with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_local') as mock_local:
+                        mock_save.return_value = True
+                        mock_local.return_value = True
+
+                        mock_instance = MagicMock()
+                        mock_instance.create_objective.return_value = simple_objective
+                        MockOpt.return_value = mock_instance
+
+                        # Trigger pause after 5 trials
+                        def pause_after_5(trial):
+                            result = simple_objective(trial)
+                            if trial_count[0] >= 5:
+                                optimizer._pause_requested = True
+                            return result
+
+                        mock_instance.create_objective.return_value = pause_after_5
+
+                        # Run optimization
+                        study = optimizer.optimize(n_trials=100)
+
+                        # Verify pause occurred
+                        assert optimizer.should_pause, "Optimization should have paused"
+                        assert trial_count[0] == 5, f"Expected 5 trials, got {trial_count[0]}"
+
+                        # Check the resume command
+                        resume_cmd = optimizer._build_resume_command()
+                        assert "scripts/world_model_hpo.py" in resume_cmd
+                        assert "--wandb test_project" in resume_cmd
+                        assert "--study-name my_study" in resume_cmd
+                        assert "--trial-steps 40000" in resume_cmd
+                        assert "--resume-from latest" in resume_cmd
+        finally:
+            sys.argv = original_argv
+
 
 if __name__ == "__main__":
     pytest.main([__file__, '-v'])
