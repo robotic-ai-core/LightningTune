@@ -103,6 +103,7 @@ class PausibleOptunaOptimizer:
         restart_on_save: bool = False,
         enable_pause: bool = True,
         use_reflow: bool = True,  # Deprecated - always uses LightningReflow now
+        checkpoint_top_k: int = 0,  # Number of best trial checkpoints to keep. 0 disables checkpointing.
         # New enhanced features
         override_config: Optional[Union[str, Dict[str, Any]]] = None,
         persist_args: bool = True,
@@ -115,7 +116,7 @@ class PausibleOptunaOptimizer:
     ):
         """
         Initialize the pausible optimizer with enhanced features.
-        
+
         Args:
             base_config: Base configuration file path or dict
             search_space: Function or OptunaSearchSpace defining parameters to optimize
@@ -128,6 +129,7 @@ class PausibleOptunaOptimizer:
             save_every_n_trials: Save checkpoint every N trials
             enable_pause: Whether to enable 'p' key pause functionality
             use_reflow: Deprecated - always uses LightningReflow now (parameter kept for backward compatibility)
+            checkpoint_top_k: Number of best trial checkpoints to keep. 0 disables checkpointing (default).
             override_config: Optional override configuration to layer on top of base_config
             persist_args: Whether to automatically persist command-line arguments
             args: Parsed command-line arguments to persist (if persist_args=True)
@@ -169,6 +171,7 @@ class PausibleOptunaOptimizer:
         self.restart_on_save = restart_on_save
         self.enable_pause = enable_pause
         self.use_reflow = use_reflow
+        self.checkpoint_top_k = checkpoint_top_k
         self.test_mode = test_mode
         
         # New enhanced features
@@ -677,6 +680,7 @@ class PausibleOptunaOptimizer:
                 n_trials=1,  # We'll run one at a time for checkpointing
                 callbacks=callbacks,
                 wandb_project=self.wandb_project,
+                checkpoint_top_k=self.checkpoint_top_k,
                 **opt_kwargs
             )
 

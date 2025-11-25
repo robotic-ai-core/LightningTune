@@ -34,6 +34,84 @@ from ..utils.config_utils import apply_dotted_updates, load_config
 logger = logging.getLogger(__name__)
 
 
+class TrialCheckpointManager:
+    """
+    Manages trial checkpoints, keeping only the top-k best trials.
+
+    This helps reduce disk usage during HPO by automatically cleaning up
+    checkpoints from trials that are no longer in the top-k.
+    """
+
+    def __init__(self, top_k: int = 0, direction: str = "minimize"):
+        """
+        Initialize the checkpoint manager.
+
+        Args:
+            top_k: Number of best trial checkpoints to keep. 0 disables checkpointing.
+            direction: Optimization direction ("minimize" or "maximize")
+        """
+        self.top_k = top_k
+        self.direction = direction
+        self.trial_checkpoints: Dict[int, tuple] = {}  # {trial_number: (value, path)}
+
+    @property
+    def checkpoints_enabled(self) -> bool:
+        """Whether checkpointing is enabled (top_k > 0)."""
+        return self.top_k > 0
+
+    def register_trial(self, trial_number: int, value: float, checkpoint_path: Path) -> None:
+        """
+        Register a completed trial's checkpoint.
+
+        Args:
+            trial_number: The trial number
+            value: The objective value achieved
+            checkpoint_path: Path to the trial's checkpoint directory
+        """
+        if not self.checkpoints_enabled:
+            return
+
+        self.trial_checkpoints[trial_number] = (value, checkpoint_path)
+        self._cleanup_if_needed()
+
+    def _cleanup_if_needed(self) -> None:
+        """Remove checkpoints from worst trials if we exceed top_k."""
+        if len(self.trial_checkpoints) <= self.top_k:
+            return
+
+        # Sort by value - best first
+        reverse = (self.direction == "maximize")
+        sorted_trials = sorted(
+            self.trial_checkpoints.items(),
+            key=lambda x: x[1][0],
+            reverse=reverse
+        )
+
+        # Keep only top_k, delete the rest
+        trials_to_delete = sorted_trials[self.top_k:]
+
+        for trial_number, (value, path) in trials_to_delete:
+            try:
+                if path.exists():
+                    shutil.rmtree(path)
+                    logger.debug(f"Cleaned up checkpoint for trial {trial_number} (value={value:.6f})")
+            except Exception as e:
+                logger.warning(f"Could not clean up checkpoint for trial {trial_number}: {e}")
+            del self.trial_checkpoints[trial_number]
+
+    def get_best_checkpoint_path(self) -> Optional[Path]:
+        """Get the path to the best trial's checkpoint."""
+        if not self.trial_checkpoints:
+            return None
+
+        reverse = (self.direction == "maximize")
+        best_trial = max(
+            self.trial_checkpoints.items(),
+            key=lambda x: x[1][0] if reverse else -x[1][0]
+        )
+        return best_trial[1][1]  # Return the path
+
+
 class OptunaDrivenOptimizer:
     """
     Optuna optimizer using LightningReflow for consistent training environment.
@@ -65,6 +143,7 @@ class OptunaDrivenOptimizer:
         callbacks: Optional[List[Callback]] = None,
         experiment_dir: Optional[Path] = None,
         save_checkpoints: bool = True,
+        checkpoint_top_k: int = 0,
         metric: str = "val_loss",
         verbose: bool = True,
         wandb_project: Optional[str] = None,
@@ -88,7 +167,8 @@ class OptunaDrivenOptimizer:
             timeout: Time limit for optimization
             callbacks: Additional Lightning callbacks
             experiment_dir: Directory for saving experiments
-            save_checkpoints: Whether to save model checkpoints
+            save_checkpoints: Whether to save model checkpoints (deprecated, use checkpoint_top_k)
+            checkpoint_top_k: Number of best trial checkpoints to keep. 0 disables checkpointing (default).
             metric: Metric to optimize
             verbose: Whether to print progress
             wandb_project: Optional WandB project name
@@ -110,11 +190,28 @@ class OptunaDrivenOptimizer:
         self.n_trials = n_trials
         self.timeout = timeout
         self.callbacks = callbacks or []
-        self.save_checkpoints = save_checkpoints
         self.metric = metric
         self.verbose = verbose
         self.wandb_project = wandb_project
         self.upload_checkpoints = upload_checkpoints
+
+        # Handle checkpoint settings
+        # checkpoint_top_k=0 means no checkpoints (new default)
+        # For backward compatibility, if save_checkpoints=True and checkpoint_top_k=0,
+        # we keep the old behavior (save all). Otherwise, use checkpoint_top_k.
+        if checkpoint_top_k > 0:
+            self.checkpoint_top_k = checkpoint_top_k
+        elif save_checkpoints:
+            # Backward compatibility: save_checkpoints=True means save all (no limit)
+            self.checkpoint_top_k = float('inf')
+        else:
+            self.checkpoint_top_k = 0
+
+        # Initialize checkpoint manager
+        self.checkpoint_manager = TrialCheckpointManager(
+            top_k=checkpoint_top_k,
+            direction=direction
+        )
 
         # Setup experiment directory
         self._temp_dir = None
@@ -338,8 +435,8 @@ class OptunaDrivenOptimizer:
                     # Already instantiated callback
                     callbacks.append(cb_config)
 
-        # Add checkpoint callback if requested
-        if self.save_checkpoints:
+        # Add checkpoint callback if checkpointing is enabled
+        if self.checkpoint_manager.checkpoints_enabled:
             from lightning.pytorch.callbacks import ModelCheckpoint
             checkpoint_callback = ModelCheckpoint(
                 dirpath=self.experiment_dir / f"trial_{trial.number}",
@@ -488,6 +585,15 @@ class OptunaDrivenOptimizer:
 
                 # Extract metric value
                 metric_value = self._extract_metric_value(reflow)
+
+                # Register checkpoint with manager (for top-k cleanup)
+                if self.checkpoint_manager.checkpoints_enabled:
+                    checkpoint_path = self.experiment_dir / f"trial_{trial.number}"
+                    self.checkpoint_manager.register_trial(
+                        trial_number=trial.number,
+                        value=metric_value,
+                        checkpoint_path=checkpoint_path
+                    )
 
                 # Log final metric to WandB
                 if wandb_logger:
