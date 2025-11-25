@@ -494,7 +494,7 @@ class OptunaDrivenOptimizer:
             trainer_config['devices'] = 'auto'
 
         # Ensure checkpointing is enabled if we have checkpoint callbacks
-        if self.save_checkpoints and trainer_config.get('enable_checkpointing') is False:
+        if self.checkpoint_manager.checkpoints_enabled and trainer_config.get('enable_checkpointing') is False:
             trainer_config['enable_checkpointing'] = True
 
         return trainer_config

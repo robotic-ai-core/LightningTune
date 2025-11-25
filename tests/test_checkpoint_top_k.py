@@ -186,6 +186,25 @@ class TestOptunaDrivenOptimizerCheckpointIntegration:
         assert optimizer.checkpoint_manager.checkpoints_enabled
         assert optimizer.checkpoint_manager.top_k == 3
 
+    def test_create_objective_does_not_raise_attribute_error(self):
+        """Test that create_objective() works without AttributeError.
+
+        This catches regressions where internal attributes are renamed
+        but not updated in all code paths.
+        """
+        from LightningTune.optuna.optimizer import OptunaDrivenOptimizer
+
+        optimizer = OptunaDrivenOptimizer(
+            base_config={"trainer": {"max_epochs": 1}},
+            search_space=lambda trial: {"x": trial.suggest_float("x", 0, 1)},
+            model_class=MagicMock,
+            checkpoint_top_k=0,
+        )
+
+        # This should not raise AttributeError
+        objective = optimizer.create_objective()
+        assert callable(objective)
+
 
 class TestPausibleOptimizerCheckpointIntegration:
     """Integration tests for checkpoint_top_k in PausibleOptunaOptimizer."""
