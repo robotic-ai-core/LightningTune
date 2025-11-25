@@ -1,18 +1,15 @@
 """
-Optuna-driven optimizer for PyTorch Lightning using direct dependency injection.
+Optuna-driven optimizer using LightningReflow for HPO trials.
 
-This module provides a clean optimizer that directly uses Optuna's samplers and pruners
-without unnecessary abstraction layers.
+This module provides a clean optimizer that uses LightningReflow for training execution,
+ensuring HPO trials run with the same optimizations as standalone training.
 """
 
-import os
 import json
-import yaml
 import tempfile
 import shutil
 import atexit
 import copy
-import inspect
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, Union, Type, List
 import logging
@@ -20,10 +17,15 @@ import logging
 import optuna
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.pruners import BasePruner, MedianPruner, NopPruner
-import lightning as L
-from lightning import LightningModule, Trainer
+import torch
 from lightning.pytorch.callbacks import Callback
-from lightning.pytorch.cli import instantiate_class
+
+# Import LightningReflow for training orchestration
+import sys
+lightning_reflow_path = Path(__file__).parent.parent.parent.parent / "LightningReflow"
+if lightning_reflow_path.exists():
+    sys.path.insert(0, str(lightning_reflow_path))
+from lightning_reflow import LightningReflow
 
 from .search_space import OptunaSearchSpace
 from .callbacks import OptunaPruningCallback
@@ -32,57 +34,29 @@ from ..utils.config_utils import apply_dotted_updates, load_config
 logger = logging.getLogger(__name__)
 
 
-def _instantiate_nested_classes(config: Any) -> Any:
-    """
-    Recursively instantiate classes from config dicts with class_path.
-
-    Args:
-        config: Config value (can be dict, list, or primitive)
-
-    Returns:
-        Instantiated value with nested classes resolved
-    """
-    if isinstance(config, dict):
-        # Check if this dict represents a class to instantiate
-        if 'class_path' in config:
-            # Get init_args (may be nested configs themselves)
-            init_args = config.get('init_args', {})
-            # Recursively instantiate nested args
-            instantiated_init_args = _instantiate_nested_classes(init_args)
-            # Create updated config with instantiated args
-            updated_config = {
-                'class_path': config['class_path'],
-                'init_args': instantiated_init_args
-            }
-            # Instantiate this class with the updated config
-            return instantiate_class((), updated_config)
-        else:
-            # Regular dict - recursively process values
-            return {k: _instantiate_nested_classes(v) for k, v in config.items()}
-    elif isinstance(config, list):
-        # Recursively process list elements
-        return [_instantiate_nested_classes(item) for item in config]
-    else:
-        # Primitive value - return as is
-        return config
-
-
 class OptunaDrivenOptimizer:
     """
-    Simple, clean optimizer using Optuna with dependency injection.
-    
-    No unnecessary strategy abstraction - just pass in Optuna's samplers and pruners directly.
+    Optuna optimizer using LightningReflow for consistent training environment.
+
+    This optimizer ensures that HPO trials run with the same optimizations as standalone
+    training, including:
+    - PyTorch compilation (if configured)
+    - Environment variable setup (CUDA configs, etc.)
+    - Proper callback management
+    - Consistent configuration handling
+    - Nested class_path config instantiation
+    - Resource cleanup between trials
     """
-    
+
     def __init__(
         self,
         base_config: Union[str, Path, Dict[str, Any]],
         search_space: Union[OptunaSearchSpace, Callable[[optuna.Trial], Dict[str, Any]]],
-        model_class: Type,  # Type[LightningModule] but supporting both imports
-        datamodule_class: Optional[Type] = None,  # Type[LightningDataModule] but supporting both
-        sampler: Optional[BaseSampler] = None,  # Direct Optuna sampler
-        pruner: Optional[BasePruner] = None,    # Direct Optuna pruner
-        config_overrides: Optional[Dict[str, Any]] = None,  # Fixed config overrides
+        model_class: Type,
+        datamodule_class: Optional[Type] = None,
+        sampler: Optional[BaseSampler] = None,
+        pruner: Optional[BasePruner] = None,
+        config_overrides: Optional[Dict[str, Any]] = None,
         study_name: Optional[str] = None,
         storage: Optional[str] = None,
         direction: str = "minimize",
@@ -93,62 +67,43 @@ class OptunaDrivenOptimizer:
         save_checkpoints: bool = True,
         metric: str = "val_loss",
         verbose: bool = True,
-        wandb_project: Optional[str] = None,  # WandB project name for logging
-        upload_checkpoints: bool = False,  # Whether to upload checkpoint artifacts to WandB
+        wandb_project: Optional[str] = None,
+        upload_checkpoints: bool = False,
     ):
         """
-        Initialize the optimizer with direct Optuna components.
-        
+        Initialize the optimizer.
+
         Args:
             base_config: Base configuration (path to YAML/JSON or dict)
-            search_space: OptunaSearchSpace instance or callable function that takes
-                         a trial and returns suggested parameters
+            search_space: OptunaSearchSpace instance or callable function
             model_class: PyTorch Lightning module class
             datamodule_class: Optional PyTorch Lightning datamodule class
-            sampler: Optuna sampler (e.g., TPESampler, RandomSampler, CmaEsSampler)
-                    If None, defaults to TPESampler()
-            pruner: Optuna pruner (e.g., MedianPruner, HyperbandPruner, SuccessiveHalvingPruner)
-                   If None, defaults to MedianPruner()
-            config_overrides: Optional dict of config values to override (not optimized).
-                             These are applied after base_config but before search_space suggestions.
-                             Useful for reducing epochs/data during HPO.
+            sampler: Optuna sampler (defaults to TPESampler)
+            pruner: Optuna pruner (defaults to MedianPruner)
+            config_overrides: Fixed config overrides (applied before and after search space)
             study_name: Name for the Optuna study
-            storage: Storage URL for Optuna (e.g., "sqlite:///study.db")
+            storage: Storage URL for Optuna
             direction: Optimization direction ("minimize" or "maximize")
             n_trials: Number of trials to run
-            timeout: Time limit for optimization in seconds
+            timeout: Time limit for optimization
             callbacks: Additional Lightning callbacks
-            experiment_dir: Directory for saving experiments. If None, uses a temporary
-                           directory that will be cleaned up after optimization
+            experiment_dir: Directory for saving experiments
             save_checkpoints: Whether to save model checkpoints
             metric: Metric to optimize
             verbose: Whether to print progress
-            wandb_project: Optional WandB project name for experiment tracking
-            upload_checkpoints: Whether to upload checkpoint artifacts to WandB (saves space if False)
-            
-        Example:
-            >>> from optuna.samplers import TPESampler
-            >>> from optuna.pruners import HyperbandPruner
-            >>> 
-            >>> optimizer = OptunaDrivenOptimizer(
-            ...     base_config="config.yaml",
-            ...     search_space=search_space,
-            ...     model_class=MyModel,
-            ...     sampler=TPESampler(n_startup_trials=10),
-            ...     pruner=HyperbandPruner(min_resource=1, max_resource=100)
-            ... )
-            >>> study = optimizer.optimize()
+            wandb_project: Optional WandB project name
+            upload_checkpoints: Whether to upload checkpoints to WandB
         """
         self.base_config = self._load_config(base_config)
         self.search_space = search_space
         self.model_class = model_class
         self.datamodule_class = datamodule_class
         self.config_overrides = config_overrides or {}
-        
+
         # Use provided sampler/pruner or defaults
         self.sampler = sampler if sampler is not None else TPESampler()
         self.pruner = pruner if pruner is not None else MedianPruner()
-        
+
         self.study_name = study_name or "optuna_study"
         self.storage = storage
         self.direction = direction
@@ -160,255 +115,416 @@ class OptunaDrivenOptimizer:
         self.verbose = verbose
         self.wandb_project = wandb_project
         self.upload_checkpoints = upload_checkpoints
-        
+
         # Setup experiment directory
         self._temp_dir = None
         if experiment_dir is None:
-            # Create temporary directory
             self._temp_dir = tempfile.mkdtemp(prefix=f"{study_name}_")
             self.experiment_dir = Path(self._temp_dir)
             if self.verbose:
-                logger.info(f"📁 Using temporary directory: {self.experiment_dir}")
-                logger.info("   Results will be cleaned up after optimization")
-            # Register cleanup function
+                logger.info(f"Using temporary directory: {self.experiment_dir}")
             atexit.register(self._cleanup_temp_dir)
         else:
             self.experiment_dir = Path(experiment_dir)
             if self.verbose:
-                logger.info(f"📁 Using persistent directory: {self.experiment_dir}")
-        
-        # Create experiment directory
+                logger.info(f"Using persistent directory: {self.experiment_dir}")
+
         self.experiment_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Initialize study
+
+        # Initialize study tracking
         self.study = None
         self.best_trial = None
         self.best_checkpoint = None
-    
+
     def _cleanup_temp_dir(self):
         """Clean up temporary directory if it was created."""
         if self._temp_dir and Path(self._temp_dir).exists():
             try:
                 shutil.rmtree(self._temp_dir)
                 if self.verbose:
-                    logger.info(f"🧹 Cleaned up temporary directory: {self._temp_dir}")
+                    logger.info(f"Cleaned up temporary directory: {self._temp_dir}")
             except Exception as e:
                 logger.warning(f"Could not clean up temporary directory: {e}")
-    
+
     def _load_config(self, config_source: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
         """Load configuration from file or dict."""
         return load_config(config_source)
-    
+
+    def _reset_torch_compile_state(self):
+        """Reset torch compile state between trials to prevent interference."""
+        try:
+            import gc
+
+            # Reset torch._dynamo state if available
+            if hasattr(torch, '_dynamo'):
+                if hasattr(torch._dynamo, 'reset'):
+                    torch._dynamo.reset()
+
+                if hasattr(torch._dynamo, 'config'):
+                    default_settings = {
+                        'cache_size_limit': 64,
+                        'recompile_limit': 8,
+                    }
+                    for key, default_value in default_settings.items():
+                        if hasattr(torch._dynamo.config, key):
+                            setattr(torch._dynamo.config, key, default_value)
+
+            # Clear CUDA cache if using GPU
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                torch.cuda.ipc_collect()
+                torch.cuda.manual_seed_all(torch.initial_seed())
+
+            # Force garbage collection
+            gc.collect()
+
+            if self.verbose:
+                logger.debug("Reset torch compile state between trials")
+
+        except Exception as e:
+            logger.debug(f"Could not reset torch compile state: {e}")
+
+    def _extract_config_args(self, config: Dict[str, Any]) -> tuple:
+        """
+        Extract model and data args from config.
+
+        Handles both flat configs and configs with 'init_args' structure.
+
+        Returns:
+            Tuple of (model_args, data_args)
+        """
+        model_config = config.get('model', {})
+        if 'init_args' in model_config:
+            model_args = model_config['init_args']
+        else:
+            model_args = model_config
+
+        data_config = config.get('data', {})
+        if 'init_args' in data_config:
+            data_args = data_config['init_args']
+        else:
+            data_args = data_config
+
+        return model_args, data_args
+
+    def _extract_metric_value(self, reflow: LightningReflow) -> float:
+        """
+        Extract the target metric value from trainer's callback_metrics.
+
+        Args:
+            reflow: LightningReflow instance
+
+        Returns:
+            Metric value as float, or default value if metric not found
+        """
+        default_value = float('inf') if self.direction == "minimize" else float('-inf')
+
+        if hasattr(reflow, 'trainer') and hasattr(reflow.trainer, 'callback_metrics'):
+            if self.metric in reflow.trainer.callback_metrics:
+                return reflow.trainer.callback_metrics[self.metric].item()
+
+        logger.warning(f"Metric {self.metric} not found in callback_metrics")
+        return default_value
+
+    def _finalize_wandb(self, wandb_logger, status: str):
+        """
+        Finalize WandB logger with proper cleanup.
+
+        Args:
+            wandb_logger: WandB logger instance
+            status: Trial status ('success', 'pruned', 'failed')
+        """
+        if wandb_logger:
+            from ..utils.wandb_logger import finalize_wandb_logger
+            finalize_wandb_logger(wandb_logger, status)
+
+    def _cleanup_dataloader_workers(self, trial_number: int, reflow: LightningReflow = None, status: str = "completed"):
+        """
+        Clean up DataLoader workers to prevent thread accumulation.
+
+        Note: This cleanup is primarily handled by LightningReflow.fit() finally block.
+        This method provides additional cleanup for edge cases.
+
+        Args:
+            trial_number: Trial number for logging
+            reflow: LightningReflow instance
+            status: Trial status for logging
+        """
+        if not reflow:
+            return
+
+        try:
+            from .memory_cleanup import cleanup_trial_resources
+
+            trainer = reflow.trainer if hasattr(reflow, 'trainer') else None
+            datamodule = reflow.datamodule if hasattr(reflow, 'datamodule') else None
+
+            cleanup_trial_resources(trainer=trainer, datamodule=datamodule)
+            logger.debug(f"Trial {trial_number} ({status}): cleanup completed")
+        except Exception as cleanup_err:
+            logger.warning(f"Trial {trial_number} ({status}): cleanup failed: {cleanup_err}")
+
+    def _prepare_callbacks(self, trial: optuna.Trial, config: Dict[str, Any]) -> List[Callback]:
+        """
+        Prepare callbacks for a trial including pruning, NaN detection, and checkpointing.
+
+        Args:
+            trial: Optuna trial
+            config: Trial configuration
+
+        Returns:
+            List of callbacks
+        """
+        callbacks = list(self.callbacks)
+
+        # Add pruning callback and NaN detection
+        if not isinstance(self.pruner, NopPruner):
+            try:
+                from .nan_detection_callback import EnhancedOptunaPruningCallback
+                pruning_callback = EnhancedOptunaPruningCallback(
+                    trial,
+                    monitor=self.metric,
+                    check_nan=True,
+                    verbose=True,
+                )
+            except ImportError:
+                pruning_callback = OptunaPruningCallback(trial, monitor=self.metric)
+            callbacks.append(pruning_callback)
+
+            # Add train-step NaN detection
+            try:
+                from .nan_detection_callback import NaNDetectionCallback
+                nan_callback = NaNDetectionCallback(
+                    trial,
+                    monitor=self.metric,
+                    check_train_loss=True,
+                    check_every_n_steps=10,
+                    verbose=True
+                )
+                callbacks.append(nan_callback)
+            except ImportError:
+                pass
+        else:
+            # NopPruner: still add NaN detection
+            try:
+                from .nan_detection_callback import NaNDetectionCallback
+                nan_callback = NaNDetectionCallback(
+                    trial,
+                    monitor=self.metric,
+                    check_train_loss=True,
+                    check_every_n_steps=10,
+                    verbose=True
+                )
+                callbacks.append(nan_callback)
+            except ImportError:
+                pass
+
+        # Extract and instantiate callbacks from config
+        trainer_config = config.get('trainer', {})
+        config_callbacks = trainer_config.get('callbacks', [])
+        if config_callbacks:
+            for cb_config in config_callbacks:
+                if isinstance(cb_config, dict) and 'class_path' in cb_config:
+                    try:
+                        cb = self._instantiate_callback(cb_config)
+                        # Filter out callbacks that conflict with HPO
+                        from lightning.pytorch.callbacks import ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar
+                        if not isinstance(cb, (ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar)):
+                            callbacks.append(cb)
+                    except Exception as e:
+                        logger.warning(f"Failed to instantiate callback from config: {e}")
+                elif not isinstance(cb_config, dict):
+                    # Already instantiated callback
+                    callbacks.append(cb_config)
+
+        # Add checkpoint callback if requested
+        if self.save_checkpoints:
+            from lightning.pytorch.callbacks import ModelCheckpoint
+            checkpoint_callback = ModelCheckpoint(
+                dirpath=self.experiment_dir / f"trial_{trial.number}",
+                filename="{epoch}-{val_loss:.2f}",
+                monitor=self.metric,
+                mode="min" if self.direction == "minimize" else "max",
+                save_top_k=1,
+            )
+            callbacks.append(checkpoint_callback)
+
+        # Add prune-on-exception callback
+        try:
+            from .callbacks import PruneOnExceptionCallback
+            callbacks.append(PruneOnExceptionCallback(trial))
+        except Exception:
+            pass
+
+        return callbacks
+
+    def _instantiate_callback(self, cb_config: Dict[str, Any]) -> Callback:
+        """Instantiate a callback from class_path + init_args config."""
+        import importlib
+        class_path = cb_config['class_path']
+        module_path, class_name = class_path.rsplit('.', 1)
+        module = importlib.import_module(module_path)
+        cls = getattr(module, class_name)
+        init_args = cb_config.get('init_args', {})
+        return cls(**init_args)
+
+    def _prepare_trainer_config(self, config: Dict[str, Any], wandb_logger) -> Dict[str, Any]:
+        """
+        Prepare trainer configuration for a trial.
+
+        Args:
+            config: Trial configuration
+            wandb_logger: WandB logger instance (or None)
+
+        Returns:
+            Trainer configuration dict
+        """
+        trainer_config = config.get('trainer', {}).copy()
+
+        # Remove fields that will be set separately
+        trainer_config.pop('callbacks', None)
+        trainer_config.pop('logger', None)
+
+        # Set logger if provided
+        if wandb_logger:
+            trainer_config['logger'] = wandb_logger
+
+        # Prefer automatic device selection unless explicitly set
+        if 'accelerator' not in trainer_config:
+            trainer_config['accelerator'] = 'auto'
+        if 'devices' not in trainer_config:
+            trainer_config['devices'] = 'auto'
+
+        # Ensure checkpointing is enabled if we have checkpoint callbacks
+        if self.save_checkpoints and trainer_config.get('enable_checkpointing') is False:
+            trainer_config['enable_checkpointing'] = True
+
+        return trainer_config
+
     def create_objective(self) -> Callable[[optuna.Trial], float]:
         """
-        Create the objective function for Optuna.
-        
+        Create the objective function using LightningReflow.
+
         Returns:
             Objective function that takes a trial and returns a metric value
         """
-        # Pre-check if search space is config-aware (takes 2+ args: trial, config)
-        is_config_aware = False
-        if callable(self.search_space) and not hasattr(self.search_space, 'suggest_params'):
-            try:
-                sig = inspect.signature(self.search_space)
-                # Check for at least 2 parameters (trial, config)
-                if len(sig.parameters) >= 2:
-                    is_config_aware = True
-            except Exception:
-                pass
-
         def objective(trial: optuna.Trial) -> float:
-            # Start with base config (defensive for None / empty YAML)
-            config = (self.base_config or {}).copy()
-            # Ensure deterministic seeding for vanilla path if seed present
-            try:
-                import lightning.pytorch as pl
-                seed_value = config.get('seed_everything', None)
-                if seed_value is not None:
-                    pl.seed_everything(int(seed_value))
-            except Exception:
-                pass
-            
-            # Apply fixed config overrides first
-            if self.config_overrides:
-                config = apply_dotted_updates(config, self.config_overrides)
-
-            # Then apply suggested hyperparameters from search space
-            if callable(self.search_space) and not hasattr(self.search_space, 'suggest_params'):
-                # It's a function
-                if is_config_aware:
-                    # Config-aware search space: func(trial, config) -> updated_config
-                    # Ensure we have a deep copy if we haven't already (apply_dotted_updates does it)
-                    if not self.config_overrides:
-                        config = copy.deepcopy(config)
-                    
-                    # Pass config to user function
-                    # User can modify in-place or return new config
-                    result = self.search_space(trial, config)
-                    
-                    if isinstance(result, dict):
-                        # Treat return value as updates (dotted or partial)
-                        # This handles both {"model.lr": 0.1} and {"model": {...}}
-                        config = apply_dotted_updates(config, result)
-                    
-                    # Define suggested_params for logging purposes
-                    suggested_params = trial.params
-                    
-                    # Note: We don't call apply_dotted_updates here because the user
-                    # function is responsible for returning the full config or modifying it.
-                else:
-                    # Standard search space: func(trial) -> updates_dict
-                    suggested_params = self.search_space(trial)
-                    config = apply_dotted_updates(config, suggested_params)
-            else:
-                # It's an OptunaSearchSpace object
-                suggested_params = self.search_space.suggest_params(trial)
-                config = apply_dotted_updates(config, suggested_params)
-
-            # CRITICAL FIX: Re-apply config_overrides to ensure they take precedence
-            # over search space suggestions (important for test mode settings like FAST_HPO_TESTS)
-            if self.config_overrides:
-                config = apply_dotted_updates(config, self.config_overrides)
-            
-            # Create model and datamodule
-            # Handle LightningCLI-style config with class_path and init_args
-            model_config = config.get('model', {})
-            if 'init_args' in model_config:
-                model_args = model_config['init_args']
-            else:
-                model_args = model_config
-            
-            data_config = config.get('data', {})
-            if 'init_args' in data_config:
-                data_args = data_config['init_args']
-            else:
-                data_args = data_config
-
-            # Instantiate any nested classes in model_args and data_args
-            # This handles cases like dynamics_model with class_path config
-            model_args = _instantiate_nested_classes(model_args)
-            data_args = _instantiate_nested_classes(data_args)
-
-            model = self.model_class(**model_args)
-
-            if self.datamodule_class:
-                datamodule = self.datamodule_class(**data_args)
-            else:
-                datamodule = None
-            
-            # Setup callbacks
-            callbacks = list(self.callbacks)
-            from .callback_factory import build_optuna_callbacks
-            callbacks.extend(build_optuna_callbacks(trial, self.metric))
-            
-            # Create trainer config
-            trainer_config = config.get('trainer', {})
-            
-            # Add checkpoint callback if requested
-            if self.save_checkpoints:
-                from lightning.pytorch.callbacks import ModelCheckpoint
-                checkpoint_callback = ModelCheckpoint(
-                    dirpath=self.experiment_dir / f"trial_{trial.number}",
-                    filename="{epoch}-{val_loss:.2f}",
-                    monitor=self.metric,
-                    mode="min" if self.direction == "minimize" else "max",
-                    save_top_k=1,
-                )
-                callbacks.append(checkpoint_callback)
-                # Ensure checkpointing is enabled if we're adding a checkpoint callback
-                trainer_config['enable_checkpointing'] = True
-            
-            # Extract and preserve callbacks from config (except problematic ones)
-            config_callbacks = trainer_config.pop('callbacks', None)
-            if config_callbacks:
-                # Helper to instantiate from class_path + init_args config
-                def instantiate_callback(cb_config):
-                    import importlib
-                    class_path = cb_config['class_path']
-                    module_path, class_name = class_path.rsplit('.', 1)
-                    module = importlib.import_module(module_path)
-                    cls = getattr(module, class_name)
-                    init_args = cb_config.get('init_args', {})
-                    return cls(**init_args)
-
-                for cb_config in config_callbacks:
-                    if isinstance(cb_config, dict) and 'class_path' in cb_config:
-                        try:
-                            cb = instantiate_callback(cb_config)
-                            # Filter out callbacks that conflict with HPO
-                            from lightning.pytorch.callbacks import ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar
-                            if not isinstance(cb, (ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar)):
-                                callbacks.append(cb)
-                        except Exception as e:
-                            logger.warning(f"Failed to instantiate callback from config: {e}")
-                    elif not isinstance(cb_config, dict):
-                        # Already instantiated callback
-                        callbacks.append(cb_config)
-
-            # Remove any existing logger config first
-            trainer_config.pop('logger', None)
-            
-            # Setup WandB logger if requested (centralized utility)
+            reflow = None
             wandb_logger = None
-            if self.wandb_project:
-                from ..utils.wandb_logger import create_wandb_logger
-                wandb_logger = create_wandb_logger(
-                    project=self.wandb_project,
-                    study_name=self.study_name,
-                    trial_number=trial.number,
-                    suggested_params=suggested_params,
-                    sampler_name=self.sampler.__class__.__name__,
-                    pruner_name=self.pruner.__class__.__name__,
-                    upload_checkpoints=self.upload_checkpoints,
+
+            try:
+                # Prepare config with search space suggestions
+                config = copy.deepcopy(self.base_config or {})
+
+                # Apply fixed config overrides first
+                if self.config_overrides:
+                    config = apply_dotted_updates(config, self.config_overrides)
+
+                # Apply suggested hyperparameters from search space
+                if callable(self.search_space) and not hasattr(self.search_space, 'suggest_params'):
+                    # Function signature: search_space(trial, config) -> config
+                    config = self.search_space(trial, config)
+                    suggested_params = trial.params
+                else:
+                    # Object-based search space
+                    suggested_params = self.search_space.suggest_params(trial)
+                    config = apply_dotted_updates(config, suggested_params)
+
+                # Re-apply config_overrides to ensure they take precedence
+                if self.config_overrides:
+                    config = apply_dotted_updates(config, self.config_overrides)
+
+                # Setup WandB logger if requested
+                if self.wandb_project:
+                    from ..utils.wandb_logger import create_wandb_logger
+                    wandb_logger = create_wandb_logger(
+                        project=self.wandb_project,
+                        study_name=self.study_name,
+                        trial_number=trial.number,
+                        suggested_params=suggested_params,
+                        sampler_name=self.sampler.__class__.__name__,
+                        pruner_name=self.pruner.__class__.__name__,
+                        upload_checkpoints=self.upload_checkpoints,
+                    )
+
+                # Prepare callbacks and trainer config
+                callbacks = self._prepare_callbacks(trial, config)
+                trainer_config = self._prepare_trainer_config(config, wandb_logger)
+
+                # Extract model and data configs
+                model_args, data_args = self._extract_config_args(config)
+
+                # Create LightningReflow instance
+                reflow = LightningReflow(
+                    model_class=self.model_class,
+                    datamodule_class=self.datamodule_class,
+                    model_init_args=model_args,
+                    datamodule_init_args=data_args,
+                    trainer_defaults=trainer_config,
+                    callbacks=callbacks,
+                    seed_everything=config.get('seed_everything', None),
+                    config_overrides={
+                        'environment': config.get('environment', {}),
+                        'compile': config.get('compile', {})
+                    },
+                    auto_configure_logging=False,
+                    disable_pause_callback=True  # HPO manages pause at trial boundaries
                 )
-            
-            # Handle progress bar configuration
-            if trainer_config.get('enable_progress_bar', False):
-                # Only add RichProgressBar if progress bar is enabled
-                from lightning.pytorch.callbacks import RichProgressBar
-                progress_callback = RichProgressBar(refresh_rate=10)
-                callbacks.append(progress_callback)
-                # Keep enable_progress_bar as True since we want the progress bar
-            
-            # Add prune-on-exception to free resources on early failures
-            try:
-                from .callbacks import PruneOnExceptionCallback
-                callbacks.append(PruneOnExceptionCallback(trial))
-            except Exception:
-                pass
-            
-            trainer = Trainer(
-                callbacks=callbacks,
-                logger=wandb_logger,
-                **trainer_config
-            )
-            
-            # Train model
-            try:
-                if datamodule:
-                    trainer.fit(model, datamodule=datamodule)
-                else:
-                    trainer.fit(model)
-                
-                # Return the metric value
-                if self.metric in trainer.callback_metrics:
-                    return trainer.callback_metrics[self.metric].item()
-                else:
-                    logger.warning(f"Metric {self.metric} not found in callback_metrics")
-                    return float('inf') if self.direction == "minimize" else float('-inf')
-                
+
+                # Remove PauseCallback if it was added despite disable_pause_callback
+                try:
+                    from lightning_reflow.callbacks.pause import PauseCallback
+                    if hasattr(reflow, 'callbacks') and reflow.callbacks:
+                        reflow.callbacks = [
+                            cb for cb in reflow.callbacks
+                            if not isinstance(cb, PauseCallback)
+                        ]
+                except ImportError:
+                    pass
+
+                # Run training
+                reflow.fit()
+
+                # Extract metric value
+                metric_value = self._extract_metric_value(reflow)
+
+                # Log final metric to WandB
+                if wandb_logger:
+                    try:
+                        import wandb
+                        if wandb.run is not None:
+                            wandb.run.summary.update({"final_metric": metric_value})
+                    except Exception:
+                        pass
+
+                # Cleanup
+                self._reset_torch_compile_state()
+                self._finalize_wandb(wandb_logger, "success")
+                self._cleanup_dataloader_workers(trial.number, reflow, "completed")
+
+                return metric_value
+
             except optuna.TrialPruned:
+                self._reset_torch_compile_state()
+                self._finalize_wandb(wandb_logger, "pruned")
+                self._cleanup_dataloader_workers(trial.number, reflow, "pruned")
                 raise
+
             except Exception as e:
                 logger.error(f"Trial {trial.number} failed: {e}")
+                self._reset_torch_compile_state()
+                self._finalize_wandb(wandb_logger, "failed")
+                self._cleanup_dataloader_workers(trial.number, reflow, "failed")
+                # Return worst possible value instead of failing the entire study
                 return float('inf') if self.direction == "minimize" else float('-inf')
-        
+
         return objective
-    
+
     def optimize(self) -> optuna.Study:
         """
         Run the optimization.
-        
+
         Returns:
             The Optuna study object with results
         """
@@ -421,38 +537,36 @@ class OptunaDrivenOptimizer:
             direction=self.direction,
             load_if_exists=True
         )
-        
+
         # Create objective
         objective = self.create_objective()
-        
+
         # Run optimization
         if self.verbose:
-            print(f"\n🔬 Running {self.n_trials} trials...")
-            
+            print(f"\nRunning {self.n_trials} trials with LightningReflow...")
+
         for i in range(self.n_trials):
             if self.verbose:
-                print(f"\n📊 Trial {i+1}/{self.n_trials}")
-            
-            # Run single trial without progress bar
+                print(f"\nTrial {i+1}/{self.n_trials}")
+
             self.study.optimize(
                 objective,
                 n_trials=1,
                 timeout=self.timeout if i == self.n_trials - 1 else None,
-                show_progress_bar=False  # Never show Optuna's progress bar
+                show_progress_bar=False
             )
-            
-            # Report current best after each trial
+
             if self.verbose and self.study.best_trial:
                 print(f"   Current best value: {self.study.best_value:.6f} (trial {self.study.best_trial.number})")
-        
+
         # Store best trial
         self.best_trial = self.study.best_trial
-        
+
         if self.verbose:
             print(f"\nBest trial: {self.best_trial.number}")
             print(f"Best value: {self.best_trial.value}")
             print(f"Best params: {self.best_trial.params}")
-        
+
         # Save results
         results_file = self.experiment_dir / "best_params.json"
         with open(results_file, 'w') as f:
@@ -461,20 +575,24 @@ class OptunaDrivenOptimizer:
                 "value": self.best_trial.value,
                 "params": self.best_trial.params,
             }, f, indent=2)
-        
+
         return self.study
-    
+
     def get_best_config(self) -> Dict[str, Any]:
         """Get the configuration of the best trial."""
         if not self.best_trial:
             raise ValueError("No optimization has been run yet")
-        
+
         config = self.base_config.copy()
         return apply_dotted_updates(config, self.best_trial.params)
-    
+
     def resume(self) -> optuna.Study:
         """Resume optimization from a previous run."""
         if not self.storage:
             raise ValueError("Cannot resume without storage. Set storage parameter.")
-        
+
         return self.optimize()
+
+
+# Backward compatibility alias
+ReflowOptunaDrivenOptimizer = OptunaDrivenOptimizer

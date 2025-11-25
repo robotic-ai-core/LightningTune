@@ -12,11 +12,10 @@ def _patch_underlying_optimizer():
     def simple_objective(trial: optuna.Trial):
         return trial.suggest_float('x', 0.0, 1.0)
     mock_instance.create_objective.return_value = simple_objective
+    # After consolidation, only OptunaDrivenOptimizer exists (always uses LightningReflow)
     p1 = patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer', autospec=True)
-    p2 = patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer', autospec=True)
     cm1 = p1.start(); cm1.return_value = mock_instance
-    cm2 = p2.start(); cm2.return_value = mock_instance
-    return mock_instance, p1, p2
+    return mock_instance, p1, None  # p2 is no longer needed
 
 
 def _stop(*patchers):

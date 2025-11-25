@@ -43,17 +43,13 @@ class TestHPOSaveFrequency:
         # Track save calls
         save_calls = []
         
-        def track_save(study=None, expected_trials=None, **kwargs):
-            """Track when saves happen (new signature uses kwargs)."""
-            if study is None:
-                study = kwargs.get('study')
-            if expected_trials is None:
-                expected_trials = kwargs.get('total_trials_completed')
-            finished_count = len([t for t in study.trials 
+        def track_save(wandb_project, *, study_name=None, study=None, total_trials_completed=None, **kwargs):
+            """Track when saves happen (matches persist_save_study_to_wandb signature)."""
+            finished_count = len([t for t in study.trials
                                 if t.state in [optuna.trial.TrialState.COMPLETE,
                                               optuna.trial.TrialState.PRUNED]])
             save_calls.append({
-                'expected': expected_trials,
+                'expected': total_trials_completed,
                 'actual': finished_count,
                 'trial_numbers': [t.number for t in study.trials]
             })

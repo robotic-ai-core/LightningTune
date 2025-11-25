@@ -151,7 +151,7 @@ class TestPersistentConfigOverrides:
         mock_optimizer = MagicMock()
         mock_optimizer.optimize.return_value = study
         with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer', return_value=mock_optimizer), \
-             patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer', return_value=mock_optimizer):
+             patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer', return_value=mock_optimizer):
             # Resume with some overrides changed
             new_overrides = {
                 "trial_steps": 5000,  # Changed
@@ -197,7 +197,7 @@ class TestPersistentConfigOverrides:
         mock_optimizer = MagicMock()
         mock_optimizer.optimize.return_value = mock_study
         with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer', return_value=mock_optimizer), \
-             patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer', return_value=mock_optimizer):
+             patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer', return_value=mock_optimizer):
             # Start new study with overrides
             with caplog.at_level(logging.INFO):
                 study = optimizer.optimize(
@@ -230,7 +230,7 @@ class TestPersistentConfigOverrides:
         mock_optimizer = MagicMock()
         mock_optimizer.optimize.return_value = mock_study
         with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer', return_value=mock_optimizer), \
-             patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer', return_value=mock_optimizer):
+             patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer', return_value=mock_optimizer):
             # Start without overrides
             with caplog.at_level(logging.INFO):
                 study = optimizer.optimize(n_trials=5)

@@ -245,7 +245,7 @@ class TestCounterRestorationLogic:
     def test_fresh_start_counter_initialization(self, tmp_path: Path):
         """Test that fresh start initializes counter correctly."""
         with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
-            with patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer'):
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
                 optimizer = PausibleOptunaOptimizer(
                     base_config={'dummy': 'config'},
                     search_space=lambda trial: {},
@@ -278,7 +278,7 @@ class TestCounterRestorationLogic:
         checkpoint_dir = tmp_path / "checkpoints"
 
         with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
-            with patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer'):
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
                 # First run: save after 5 trials
                 opt1 = PausibleOptunaOptimizer(
                     base_config={'dummy': 'config'},
@@ -340,7 +340,7 @@ class TestCounterRestorationLogic:
         checkpoint_dir = tmp_path / "checkpoints"
 
         with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
-            with patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer'):
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
                 optimizer = PausibleOptunaOptimizer(
                     base_config={'dummy': 'config'},
                     search_space=lambda trial: {},
@@ -379,7 +379,7 @@ class TestCounterRestorationLogic:
         checkpoint_dir = tmp_path / "checkpoints"
 
         with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
-            with patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer'):
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
                 optimizer = PausibleOptunaOptimizer(
                     base_config={'dummy': 'config'},
                     search_space=lambda trial: {},
@@ -465,7 +465,7 @@ class TestBackwardCompatibility:
             pickle.dump(old_checkpoint, f)
 
         with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
-            with patch('LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer'):
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer'):
                 optimizer = PausibleOptunaOptimizer(
                     base_config={'dummy': 'config'},
                     search_space=lambda trial: {},

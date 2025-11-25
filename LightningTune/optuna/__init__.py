@@ -8,8 +8,7 @@ Direct dependency injection is used - no unnecessary abstractions.
 Just pass Optuna's samplers and pruners directly to the optimizer.
 """
 
-from .optimizer import OptunaDrivenOptimizer
-from .optimizer_reflow import ReflowOptunaDrivenOptimizer
+from .optimizer import OptunaDrivenOptimizer, ReflowOptunaDrivenOptimizer  # ReflowOptunaDrivenOptimizer is alias for backward compatibility
 from .search_space import (
     OptunaSearchSpace,
     SimpleSearchSpace,

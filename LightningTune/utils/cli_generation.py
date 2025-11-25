@@ -291,8 +291,13 @@ def format_best_trial_results(
         lines.append("Best hyperparameters:")
         lines.append("-" * width)
 
-        for key, value in study.best_params.items():
-            lines.append(f"  {key:30s} = {value}")
+        if study.best_params:
+            for key, value in study.best_params.items():
+                lines.append(f"  {key:30s} = {value}")
+        else:
+            lines.append("  ⚠️  WARNING: Best trial has no parameters stored!")
+            lines.append("  This may indicate a corrupted study checkpoint.")
+            lines.append(f"  Trial state: {best_trial.state}")
 
         lines.append(separator)
     except ValueError:

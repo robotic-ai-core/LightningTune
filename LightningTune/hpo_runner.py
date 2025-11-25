@@ -1060,8 +1060,22 @@ class HPORunner:
         else:
             config = {}
 
+        # Validate best trial has parameters
+        best_trial = study.best_trial
+        if not best_trial.params:
+            raise ValueError(
+                f"Best trial #{best_trial.number} has no parameters stored. "
+                f"This can happen if:\n"
+                f"  1. The study was loaded from a checkpoint that doesn't contain trial parameters\n"
+                f"  2. The trial failed before parameters were recorded\n"
+                f"  3. The study is empty or contains only failed/pruned trials\n"
+                f"\nBest trial info: number={best_trial.number}, value={best_trial.value}, "
+                f"state={best_trial.state}, params={best_trial.params}\n"
+                f"\nTo fix: Re-run the HPO study to get valid trials with parameters."
+            )
+
         # Reconstruct config from best trial using standard 2-arg signature
-        best_config = self.search_space(study.best_trial, config)
+        best_config = self.search_space(best_trial, config)
 
         # Determine base config path
         if base_config_path is None:

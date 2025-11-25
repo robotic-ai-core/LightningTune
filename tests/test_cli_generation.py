@@ -268,6 +268,7 @@ class TestFormatBestTrialResults:
         class MockTrial:
             number = 1
             params = {}
+            state = "COMPLETE"
 
         class MockStudy:
             best_trial = MockTrial()
@@ -284,6 +285,7 @@ class TestFormatBestTrialResults:
         class MockTrial:
             number = 1
             params = {}
+            state = "COMPLETE"
 
         class MockStudy:
             best_trial = MockTrial()

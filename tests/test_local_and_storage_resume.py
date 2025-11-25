@@ -25,10 +25,9 @@ def _simple_objective(trial: optuna.Trial) -> float:
 
 
 def _patch_underlying_optimizer():
-    """Patch Optimizer classes inside pausible_optimizer to return a simple objective.
+    """Patch OptunaDrivenOptimizer inside pausible_optimizer to return a simple objective.
 
-    Returns a context manager that patches both OptunaDrivenOptimizer and
-    ReflowOptunaDrivenOptimizer in the module under test.
+    After consolidation, only OptunaDrivenOptimizer exists (always uses LightningReflow).
     """
     mock_instance = Mock()
     mock_instance.create_objective.return_value = _simple_objective
@@ -37,18 +36,11 @@ def _patch_underlying_optimizer():
         'LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer',
         autospec=True
     )
-    patch_opt_reflow = patch(
-        'LightningTune.optuna.pausible_optimizer.ReflowOptunaDrivenOptimizer',
-        autospec=True
-    )
 
     cm_opt = patch_opt.start()
     cm_opt.return_value = mock_instance
 
-    cm_opt_rf = patch_opt_reflow.start()
-    cm_opt_rf.return_value = mock_instance
-
-    return mock_instance, patch_opt, patch_opt_reflow
+    return mock_instance, patch_opt, None  # Second patcher no longer needed
 
 
 def _stop_patches(*patchers):

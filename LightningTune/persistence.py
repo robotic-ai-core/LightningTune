@@ -288,7 +288,18 @@ def load_saved_session(
     return None
 
 
-def _parse_arg(argv: List[str], name: str) -> Optional[str]:
+def parse_cli_arg(argv: List[str], name: str) -> Optional[str]:
+    """Parse a CLI argument value from argv.
+
+    Handles both '--name value' and '--name=value' formats.
+
+    Args:
+        argv: List of command line arguments
+        name: Name of the argument (without leading --)
+
+    Returns:
+        The argument value if found, None otherwise
+    """
     flag = f"--{name}"
     for i, tok in enumerate(argv or []):
         if tok == flag and i + 1 < len(argv):
@@ -296,6 +307,10 @@ def _parse_arg(argv: List[str], name: str) -> Optional[str]:
         if tok.startswith(flag + "="):
             return tok.split("=", 1)[1]
     return None
+
+
+# Alias for backward compatibility
+_parse_arg = parse_cli_arg
 
 
 def build_resume_command(original_argv: List[str], default_script: str, *, fallback_wandb: Optional[str] = None, fallback_study: Optional[str] = None) -> str:

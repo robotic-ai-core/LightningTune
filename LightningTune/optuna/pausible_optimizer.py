@@ -28,7 +28,6 @@ from lightning import LightningModule
 from lightning.pytorch.callbacks import Callback
 
 from .optimizer import OptunaDrivenOptimizer
-from .optimizer_reflow import ReflowOptunaDrivenOptimizer
 from .factories import create_sampler, create_pruner
 from ..persistence import (
     save_study_to_local as persist_save_study_to_local,
@@ -38,6 +37,7 @@ from ..persistence import (
     load_saved_session as persist_load_saved_session,
     build_resume_command as persist_build_resume_command,
     build_local_resume_command as persist_build_local_resume_command,
+    parse_cli_arg,
 )
 from ..arg_persistence import (
     merge_args_with_saved,
@@ -102,6 +102,7 @@ class PausibleOptunaOptimizer:
         save_every_n_trials: int = 10,
         restart_on_save: bool = False,
         enable_pause: bool = True,
+        use_reflow: bool = True,  # Deprecated - always uses LightningReflow now
         # New enhanced features
         override_config: Optional[Union[str, Dict[str, Any]]] = None,
         persist_args: bool = True,
@@ -126,6 +127,7 @@ class PausibleOptunaOptimizer:
             pruner_name: Name of Optuna pruner to use
             save_every_n_trials: Save checkpoint every N trials
             enable_pause: Whether to enable 'p' key pause functionality
+            use_reflow: Deprecated - always uses LightningReflow now (parameter kept for backward compatibility)
             override_config: Optional override configuration to layer on top of base_config
             persist_args: Whether to automatically persist command-line arguments
             args: Parsed command-line arguments to persist (if persist_args=True)
@@ -166,6 +168,7 @@ class PausibleOptunaOptimizer:
         self.save_every_n_trials = save_every_n_trials
         self.restart_on_save = restart_on_save
         self.enable_pause = enable_pause
+        self.use_reflow = use_reflow
         self.test_mode = test_mode
         
         # New enhanced features
@@ -263,38 +266,42 @@ class PausibleOptunaOptimizer:
         skey = key.lower()
 
         if skey == 'p':
-            # Toggle pause state (thread-safe)
+            # Toggle pause state (thread-safe) with debounce to prevent duplicates
             with self._pause_lock:
+                # Debounce: ignore if less than 300ms since last 'p' press
+                current_time = time.time()
+                last_p_time = getattr(self, '_last_p_press_time', 0)
+                if current_time - last_p_time < 0.3:
+                    return True  # Ignore duplicate
+                self._last_p_press_time = current_time
+
                 last_state = self._pause_requested
                 self._pause_requested = not self._pause_requested
                 current_state = self._pause_requested
 
-            # Print feedback (outside lock)
+            # Print feedback (outside lock) - use print() only, not logger
+            # to avoid duplicate output when logger also writes to stdout
             if current_state and not last_state:
                 msg = "\n⏸️  Pause SCHEDULED ('p' pressed)"
-                print(msg)
-                logger.info(msg)
+                print(msg, flush=True)
                 self._log_to_pause_file(msg)
             elif not current_state and last_state:
                 msg = "\n❌ Pause CANCELLED ('p' pressed again)"
-                print(msg)
-                logger.info(msg)
+                print(msg, flush=True)
                 self._log_to_pause_file(msg)
             return True
         elif skey == 'q':
             with self._pause_lock:
                 self._quit_after_current = True
             msg = "\n🛑 Quit requested ('q' pressed). Will stop after current trial."
-            print(msg)
-            logger.info(msg)
+            print(msg, flush=True)
             return True
         elif key == "\x03":  # Ctrl+C in cbreak mode
             with self._pause_lock:
                 self._pause_requested = True
                 self.should_pause = True
             msg = "\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary..."
-            print(msg)
-            logger.info(msg)
+            print(msg, flush=True)
             return True
         return False
 
@@ -348,120 +355,7 @@ class PausibleOptunaOptimizer:
         message = (f"Study has {len(completed_trials)} completed, "
                   f"{len(pruned_trials)} pruned, {len(failed_trials)} failed trials")
         return True, finished_count, message
-    
-    def save_study_to_wandb(self, study: optuna.Study, expected_trials: int) -> bool:
-        """
-        Save study state to WandB as an artifact.
 
-        Only saves if the study is in a valid state (no incomplete trials).
-
-        Args:
-            study: Optuna study to save
-            expected_trials: Expected number of completed trials
-
-        Returns:
-            True if saved successfully, False otherwise
-        """
-        if not self.wandb_project:
-            logger.debug("WandB project not configured, skipping save")
-            return False
-
-        # Verify study integrity
-        is_valid, finished_count, message = self._verify_study_integrity(study)
-
-        if not is_valid:
-            logger.warning(f"⚠️  Cannot save study: {message}")
-            logger.warning("   Incomplete trials must finish before saving.")
-            return False
-
-        # Verify expected count matches actual
-        if finished_count != expected_trials:
-            logger.warning(
-                f"⚠️  Expected {expected_trials} finished trials but found {finished_count}. "
-                f"Saving with actual count."
-            )
-            trials_completed = finished_count
-        else:
-            trials_completed = expected_trials
-
-        logger.info(f"💾 Saving study: {message}")
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pkl') as tmp:
-            session_info = {
-                "study": study,
-                "total_trials_completed": trials_completed,
-                "sampler_name": self.sampler_name,
-                "pruner_name": self.pruner_name,
-                "study_name": self.study_name,
-                "config_overrides": self.persistent_config_overrides,
-            }
-            
-            pickle.dump(session_info, tmp, protocol=pickle.HIGHEST_PROTOCOL)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            
-            # Verify save
-            tmp.seek(0)
-            try:
-                loaded_info = pickle.load(tmp)
-                # Double-check the loaded study
-                loaded_study = loaded_info["study"]
-                loaded_finished = len([t for t in loaded_study.trials 
-                                      if t.state in [optuna.trial.TrialState.COMPLETE,
-                                                    optuna.trial.TrialState.PRUNED]])
-                if loaded_finished != trials_completed:
-                    logger.error(f"Verification failed: saved {trials_completed} but loaded {loaded_finished}")
-                    return False
-            except Exception as e:
-                logger.error(f"Failed to verify saved study: {e}")
-                return False
-            
-            # Upload to WandB
-            run = None
-            try:
-                logger.info(f"🌐 Uploading checkpoint to WandB project '{self.wandb_project}'...")
-                run = wandb.init(
-                    project=self.wandb_project,
-                    job_type="hpo_checkpoint",
-                )
-                artifact = wandb.Artifact(
-                    f"{self.study_name}_checkpoint",
-                    type="optuna_study"
-                )
-                artifact.add_file(tmp.name, name="study.pkl")
-                artifact.metadata = {
-                    "total_finished_trials": trials_completed,
-                    "completed_trials": len([t for t in study.trials
-                                            if t.state == optuna.trial.TrialState.COMPLETE]),
-                    "pruned_trials": len([t for t in study.trials
-                                        if t.state == optuna.trial.TrialState.PRUNED]),
-                    "failed_trials": len([t for t in study.trials
-                                        if t.state == optuna.trial.TrialState.FAIL]),
-                    "best_value": study.best_value if study.best_trial else None,
-                    "best_trial_number": study.best_trial.number if study.best_trial else None,
-                }
-                # Log and wait for artifact to upload
-                logged_artifact = run.log_artifact(artifact, aliases=["latest"])
-
-                # IMPORTANT: Use wait() to ensure artifact uploads before we exit
-                # This blocks until the artifact is fully uploaded to WandB
-                logged_artifact.wait()
-
-                # Now we can safely finish the run
-                run.finish()
-
-                logger.info(f"✅ Study saved to WandB: {self.study_name}_checkpoint (v{trials_completed})")
-                return True
-            except Exception as e:
-                logger.error(f"❌ WandB upload failed: {e}")
-                logger.error(f"   Check your WandB API key and network connection")
-                if run is not None:
-                    try:
-                        run.finish()
-                    except Exception:
-                        pass
-                return False
-    
     @staticmethod
     def load_saved_session(
         resume_from: str,
@@ -759,14 +653,8 @@ class PausibleOptunaOptimizer:
         # Extract direction to avoid duplicate argument
         direction = opt_kwargs.pop("direction", "minimize")
 
-        # Remove use_reflow if present (no longer used)
+        # Remove use_reflow if present (deprecated, always use LightningReflow now)
         opt_kwargs.pop("use_reflow", None)
-
-        # Create optimizer (use Reflow version if requested)
-        # Backward compatibility: disable Reflow if model_class is not a LightningModule type
-        # FIXED: Always use OptunaDrivenOptimizer to ensure periodic saves work
-        # ReflowOptunaDrivenOptimizer was missing the save_every logic
-        OptimizerClass = OptunaDrivenOptimizer
         # Merge persistent overrides and runtime-only overrides for the optimizer
         _config_overrides_for_optimizer = dict(config_overrides or {})
         if runtime_overrides:
@@ -776,7 +664,7 @@ class PausibleOptunaOptimizer:
         if pre_injected_optimizer is not None:
             optimizer = pre_injected_optimizer
         else:
-            optimizer = OptimizerClass(
+            optimizer = OptunaDrivenOptimizer(
                 base_config=self.base_config,
                 search_space=self.search_space,
                 config_overrides=_config_overrides_for_optimizer,
@@ -1304,48 +1192,24 @@ class PausibleOptunaOptimizer:
                     if skey == 'p':
                         self._pause_requested = not self._pause_requested
                         if self._pause_requested:
-                            logger.info("\n⏸️  Pause SCHEDULED ('p' pressed)")
+                            print("\n⏸️  Pause SCHEDULED ('p' pressed)", flush=True)
                         else:
-                            logger.info("\n❌ Pause CANCELLED ('p' pressed again)")
+                            print("\n❌ Pause CANCELLED ('p' pressed again)", flush=True)
                     elif skey == 'q':
                         # Request quit after current trial ends
                         self._quit_after_current = True
-                        logger.info("\n🛑 Quit requested ('q' pressed). Will stop after current trial.")
+                        print("\n🛑 Quit requested ('q' pressed). Will stop after current trial.", flush=True)
                     elif raw == "\x03":  # Ctrl+C in cbreak mode
                         # Treat as a graceful pause request so we save state
                         self._pause_requested = True
                         self.should_pause = True
-                        logger.info("\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary...")
+                        print("\n⏸️  Ctrl+C detected. Pausing gracefully at trial boundary...", flush=True)
         except Exception as e:
             logger.debug(f"[PAUSE DEBUG] Exception in manual polling: {e}")
         result = self._pause_requested
         if result:
             logger.debug(f"[PAUSE DEBUG] Manual polling returning: {result}")
         return result
-
-    def _sanitize_argv(self, argv: List[str], flags_to_strip: List[str]) -> List[str]:
-        """Remove specified flags (and their values if separate) from argv.
-
-        Prevents duplicated/conflicting flags when constructing resume commands.
-        """
-        sanitized: List[str] = []
-        skip_next = False
-        for i, token in enumerate(argv):
-            if skip_next:
-                skip_next = False
-                continue
-            matched_flag = None
-            for flag in flags_to_strip:
-                if token == flag or token.startswith(flag + "="):
-                    matched_flag = flag
-                    break
-            if matched_flag is not None:
-                # If provided as "--flag value", skip the next token if it looks like a value
-                if "=" not in token and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
-                    skip_next = True
-                continue
-            sanitized.append(token)
-        return sanitized
 
     def _build_resume_command(self) -> str:
         """Construct a minimal resume command that preserves only what's necessary.
@@ -1359,23 +1223,14 @@ class PausibleOptunaOptimizer:
         script = self._original_argv[0] if (self._original_argv and self._original_argv[0]) else "scripts/world_model_hpo_optuna.py"
         parts: List[str] = ["python", script]
 
-        def parse_arg(argv: List[str], name: str) -> Optional[str]:
-            flag = f"--{name}"
-            for i, tok in enumerate(argv or []):
-                if tok == flag and i + 1 < len(argv):
-                    return argv[i + 1]
-                if tok.startswith(flag + "="):
-                    return tok.split("=", 1)[1]
-            return None
-
-        wandb_proj = parse_arg(self._original_argv, "wandb") or (str(self.wandb_project) if self.wandb_project else None)
-        study_name = parse_arg(self._original_argv, "study-name") or (str(self.study_name) if self.study_name else None)
+        wandb_proj = parse_cli_arg(self._original_argv, "wandb") or (str(self.wandb_project) if self.wandb_project else None)
+        study_name = parse_cli_arg(self._original_argv, "study-name") or (str(self.study_name) if self.study_name else None)
         if wandb_proj:
             parts += ["--wandb", wandb_proj]
         if study_name:
             parts += ["--study-name", study_name]
 
-        ts = parse_arg(self._original_argv, "trial-steps")
+        ts = parse_cli_arg(self._original_argv, "trial-steps")
         if not ts:
             try:
                 ts = self.persistent_config_overrides.get("args.trial_steps") or self.persistent_config_overrides.get("trial_steps")
@@ -1391,16 +1246,7 @@ class PausibleOptunaOptimizer:
         """Construct a minimal local resume command using filesystem path only."""
         script = self._original_argv[0] if (self._original_argv and self._original_argv[0]) else "scripts/world_model_hpo_optuna.py"
         # Include trial steps if known (prefer original argv, else persistent overrides)
-        def parse_arg(argv: List[str], name: str) -> Optional[str]:
-            flag = f"--{name}"
-            for i, tok in enumerate(argv or []):
-                if tok == flag and i + 1 < len(argv):
-                    return argv[i + 1]
-                if tok.startswith(flag + "="):
-                    return tok.split("=", 1)[1]
-            return None
-
-        ts = parse_arg(self._original_argv, "trial-steps")
+        ts = parse_cli_arg(self._original_argv, "trial-steps")
         if not ts:
             try:
                 ts = self.persistent_config_overrides.get("args.trial_steps") or self.persistent_config_overrides.get("trial_steps")
@@ -1428,44 +1274,34 @@ class PausibleOptunaOptimizer:
 
             config_key = f"args.{arg_name}"
             self.persistent_config_overrides[config_key] = arg_value
-    
+
     def save_study_to_local(self, study: optuna.Study, total_trials_completed: int) -> bool:
+        """Save study to local checkpoint. Delegates to persist_save_study_to_local."""
         if not self.local_checkpoint_dir:
             return False
-        session_info = {
-            "study": study,
-            "total_trials_completed": total_trials_completed,
-            "sampler_name": self.sampler_name,
-            "pruner_name": self.pruner_name,
-            "study_name": self.study_name,
-            "config_overrides": self.persistent_config_overrides,
-        }
-        try:
-            self.local_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            # Always write study.pkl for simplicity
-            local_path = self.local_checkpoint_dir / "study.pkl"
-            with open(local_path, 'wb') as f:
-                pickle.dump(session_info, f, protocol=pickle.HIGHEST_PROTOCOL)
-            logger.info(f"💾 Saved local study checkpoint: {local_path}")
+        return persist_save_study_to_local(
+            self.local_checkpoint_dir,
+            study,
+            total_trials_completed,
+            sampler_name=self.sampler_name,
+            pruner_name=self.pruner_name,
+            study_name=self.study_name,
+            config_overrides=self.persistent_config_overrides,
+        )
 
-            # Also save session args as YAML for easier inspection
-            session_args = {
-                "n_trials": self.persistent_config_overrides.get("args.n_trials", None),
-                "save_every": self.save_every_n_trials,
-                "isolate_trials": self.persistent_config_overrides.get("args.isolate_trials", True),
-                "sampler_name": self.sampler_name,
-                "pruner_name": self.pruner_name,
-                "study_name": self.study_name,
-                "total_trials_completed": total_trials_completed,
-            }
-            session_args_path = self.local_checkpoint_dir / "session_args.yaml"
-            with open(session_args_path, 'w') as f:
-                yaml.dump(session_args, f, default_flow_style=False)
-
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save local study: {e}")
+    def save_study_to_wandb(self, study: optuna.Study, total_trials_completed: int) -> bool:
+        """Save study to WandB. Delegates to persist_save_study_to_wandb."""
+        if not self.wandb_project:
             return False
+        return persist_save_study_to_wandb(
+            self.wandb_project,
+            study_name=self.study_name,
+            study=study,
+            total_trials_completed=total_trials_completed,
+            sampler_name=self.sampler_name,
+            pruner_name=self.pruner_name,
+            config_overrides=self.persistent_config_overrides,
+        )
 
     def load_study_from_local(self, path_or_dir: Optional[str]) -> Optional[Dict[str, Any]]:
         candidate: Optional[Path] = None

@@ -45,7 +45,7 @@ class TestAutoArgumentPersistence:
         )
         
         # Mock the Reflow optimizer to prevent actual optimization
-        with patch('LightningTune.optuna.optimizer_reflow.ReflowOptunaDrivenOptimizer') as mock_reflow:
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as mock_reflow:
             mock_optimizer = MagicMock()
             mock_study = optuna.create_study()
             mock_optimizer.optimize.return_value = mock_study
@@ -121,7 +121,7 @@ class TestAutoArgumentPersistence:
         )
         
         # Resume and check args are restored
-        with patch('LightningTune.optuna.optimizer_reflow.ReflowOptunaDrivenOptimizer') as mock_reflow:
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as mock_reflow:
             mock_optimizer = MagicMock()
             mock_optimizer.optimize.return_value = study
             mock_reflow.return_value = mock_optimizer
@@ -207,7 +207,7 @@ class TestAutoArgumentPersistence:
             )
             
             # Resume and check args are restored, not overridden by defaults
-            with patch('LightningTune.optuna.optimizer_reflow.ReflowOptunaDrivenOptimizer') as mock_reflow:
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as mock_reflow:
                 mock_optimizer = MagicMock()
                 mock_optimizer.optimize.return_value = study
                 mock_optimizer.create_objective.return_value = lambda trial: 0.5
@@ -358,7 +358,7 @@ class TestCompileModes:
         )
         
         # Mock the Reflow optimizer to prevent actual optimization
-        with patch('LightningTune.optuna.optimizer_reflow.ReflowOptunaDrivenOptimizer') as mock_reflow:
+        with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as mock_reflow:
             mock_optimizer = MagicMock()
             mock_study = optuna.create_study()
             mock_optimizer.optimize.return_value = mock_study
@@ -455,7 +455,7 @@ class TestIntegration:
             )
             
             # Mock the actual optimization
-            with patch('LightningTune.optuna.optimizer_reflow.ReflowOptunaDrivenOptimizer') as mock_reflow:
+            with patch('LightningTune.optuna.pausible_optimizer.OptunaDrivenOptimizer') as mock_reflow:
                 mock_optimizer = MagicMock()
                 mock_study = optuna.create_study()
                 
