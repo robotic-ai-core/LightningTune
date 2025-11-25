@@ -99,6 +99,7 @@ class HPORunner:
         default_study_name: Optional[str] = None,
         enable_pause: bool = True,
         pause_key: str = 'p',
+        require_config: bool = False,
     ):
         """
         Initialize HPO runner.
@@ -114,6 +115,7 @@ class HPORunner:
             default_study_name: Default study name if not specified via CLI
             enable_pause: Enable interactive pause functionality (press 'p' to pause)
             pause_key: Key to trigger pause (default 'p')
+            require_config: If True, --config CLI argument is required (no default config)
         """
         self.model_class = model_class
         self.datamodule_class = datamodule_class
@@ -124,6 +126,7 @@ class HPORunner:
         self.default_study_name = default_study_name
         self.enable_pause = enable_pause
         self.pause_key = pause_key
+        self.require_config = require_config
 
         # Auto-wrap dictionary search spaces
         # This allows passing a dict where values are callables:
@@ -660,6 +663,11 @@ class HPORunner:
                 sys.exit(1)
             logger.info(f"📄 Using config from CLI: {self.args.config}")
             self.base_config = self.args.config
+
+        # Validate that config is provided if required
+        if self.require_config and self.base_config is None:
+            logger.error("❌ --config is required. Please specify a configuration file.")
+            sys.exit(1)
 
         # Parse Lightning CLI-style dot-notation arguments
         dot_notation_overrides = self._parse_dot_notation_args(unknown_args)
