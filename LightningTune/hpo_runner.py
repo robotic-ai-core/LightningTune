@@ -670,7 +670,8 @@ class HPORunner:
             self.base_config = self.args.config
 
         # Validate that config is provided if required
-        if self.require_config and self.base_config is None:
+        # Skip validation if resuming - config will be restored from checkpoint
+        if self.require_config and self.base_config is None and not self.args.resume_from:
             logger.error("❌ --config is required. Please specify a configuration file.")
             sys.exit(1)
 
