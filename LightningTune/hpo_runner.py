@@ -60,7 +60,8 @@ class HPORunner:
         # Align with reference script: allow overriding validation interval via CLI
         'val_interval': {'type': int, 'default': None, 'help': 'Validation check interval (steps)'},
         'save_every': {'type': int, 'default': 10, 'help': 'Save checkpoint every N trials'},
-        'restart_on_save': {'type': bool, 'default': False, 'action': 'store_true', 'help': 'Exit after saving (for auto-restart wrapper)'},
+        'restart_on_save': {'type': bool, 'default': True, 'action': 'store_true', 'help': 'Restart process after save to prevent memory accumulation (default: True)'},
+        'no_restart_on_save': {'type': bool, 'default': False, 'action': 'store_true', 'help': 'Disable restart-on-save'},
         'wandb': {'type': str, 'default': None, 'help': 'WandB project name'},
         'study_name': {'type': str, 'default': None, 'help': 'Study name'},
         'resume_from': {'type': str, 'default': None, 'help': 'Resume from checkpoint'},
@@ -605,7 +606,11 @@ class HPORunner:
         temp_args, _ = temp_parser.parse_known_args(argv)
 
         # Check if we should use auto-restart orchestration
-        restart_on_save = getattr(temp_args, 'restart_on_save', False)
+        # Default is True, but can be disabled with --no-restart-on-save
+        restart_on_save = getattr(temp_args, 'restart_on_save', True)
+        no_restart_on_save = getattr(temp_args, 'no_restart_on_save', False)
+        if no_restart_on_save:
+            restart_on_save = False
         # Robust check for environment flag (handles multiple truthy values)
         env_value = os.environ.get("LIGHTNING_TUNE_NO_AUTO_RESTART", "")
         is_child_process = env_value in ("1", "true", "TRUE", "True", "yes", "YES")
