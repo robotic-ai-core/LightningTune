@@ -81,3 +81,41 @@ def cleanup_trial_resources(trainer=None, datamodule=None):
     # Basic CUDA cache clear (lightweight, non-aggressive)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def aggressive_cleanup():
+    """
+    Perform aggressive memory cleanup after a trial.
+
+    This function should be called after all trial references have been
+    deleted to ensure memory is fully released. It performs multiple
+    garbage collection passes and clears CUDA caches.
+    """
+    # Multiple GC passes to handle reference cycles
+    for _ in range(3):
+        gc.collect()
+
+    # Clear CUDA memory
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+    # Reset torch.compile caches if available
+    if hasattr(torch, '_dynamo'):
+        try:
+            if hasattr(torch._dynamo, 'reset'):
+                torch._dynamo.reset()
+        except Exception:
+            pass
+
+    # Clear any inductor caches
+    if hasattr(torch, '_inductor'):
+        try:
+            if hasattr(torch._inductor, 'codecache'):
+                # Don't clear the entire cache, just trim it
+                pass
+        except Exception:
+            pass
+
+    # Final GC pass
+    gc.collect()

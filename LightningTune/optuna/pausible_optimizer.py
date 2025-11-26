@@ -798,10 +798,11 @@ class PausibleOptunaOptimizer:
                 # Run single trial with automatic garbage collection
                 # gc_after_trial=True ensures memory is cleaned between trials
                 study.optimize(objective, n_trials=1, show_progress_bar=False, gc_after_trial=True)
-                
+
                 # Additional memory cleanup to prevent accumulation
-                from .memory_cleanup import cleanup_trial_resources
+                from .memory_cleanup import cleanup_trial_resources, aggressive_cleanup
                 cleanup_trial_resources()
+                aggressive_cleanup()  # Force release of any lingering references
                 
                 # Check if a new trial was actually finished (COMPLETE or PRUNED)
                 trials_after = len([t for t in study.trials

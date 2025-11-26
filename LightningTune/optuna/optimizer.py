@@ -609,12 +609,63 @@ class OptunaDrivenOptimizer:
                 self._finalize_wandb(wandb_logger, "success")
                 self._cleanup_dataloader_workers(trial.number, reflow, "completed")
 
+                # CRITICAL: Explicitly release large objects to prevent memory accumulation
+                # Clear any model references stored in the config dict
+                if 'model' in config and 'init_args' in config.get('model', {}):
+                    model_init = config['model']['init_args']
+                    if 'dynamics_model' in model_init:
+                        # Clear the dynamics model reference
+                        dm = model_init.pop('dynamics_model', None)
+                        if dm is not None:
+                            del dm
+                    model_init.clear()
+                config.clear()
+
+                # Clear model_args which may contain the dynamics_model
+                if model_args and 'dynamics_model' in model_args:
+                    dm = model_args.pop('dynamics_model', None)
+                    if dm is not None:
+                        del dm
+                model_args.clear()
+
+                # Clear other containers
+                if data_args:
+                    data_args.clear()
+                if callbacks:
+                    callbacks.clear()
+                if trainer_config:
+                    trainer_config.clear()
+
+                # Delete local variable references
+                del reflow
+                del config
+                del callbacks
+                del trainer_config
+                del model_args
+                del data_args
+                if wandb_logger is not None:
+                    del wandb_logger
+
+                # Aggressive cleanup to release memory
+                from .memory_cleanup import aggressive_cleanup
+                aggressive_cleanup()
+
                 return metric_value
 
             except optuna.TrialPruned:
                 self._reset_torch_compile_state()
                 self._finalize_wandb(wandb_logger, "pruned")
                 self._cleanup_dataloader_workers(trial.number, reflow, "pruned")
+
+                # Cleanup in exception path
+                if reflow is not None:
+                    del reflow
+                if wandb_logger is not None:
+                    del wandb_logger
+
+                from .memory_cleanup import aggressive_cleanup
+                aggressive_cleanup()
+
                 raise
 
             except Exception as e:
@@ -622,6 +673,16 @@ class OptunaDrivenOptimizer:
                 self._reset_torch_compile_state()
                 self._finalize_wandb(wandb_logger, "failed")
                 self._cleanup_dataloader_workers(trial.number, reflow, "failed")
+
+                # Cleanup in exception path
+                if reflow is not None:
+                    del reflow
+                if wandb_logger is not None:
+                    del wandb_logger
+
+                from .memory_cleanup import aggressive_cleanup
+                aggressive_cleanup()
+
                 # Return worst possible value instead of failing the entire study
                 return float('inf') if self.direction == "minimize" else float('-inf')
 
