@@ -51,17 +51,70 @@ When resuming from a checkpoint:
 - Arguments explicitly specified override saved values
 - Supports extending n_trials (e.g., saved with 50, resume with 100)
 
+#### Resume Sources
+
+The `--resume-from` flag supports multiple sources:
+
+| Value | Source | Description |
+|-------|--------|-------------|
+| `local` | Local filesystem | Most up-to-date checkpoint (saved after every trial) |
+| `latest` | WandB artifact | Latest WandB checkpoint (requires `--wandb`) |
+| `vN` | WandB artifact | Specific WandB version (e.g., `v5`) |
+| `/path/file.pkl` | Explicit file | Load from any file path |
+
+**Important:** Local checkpoints are saved after **every** trial, while WandB artifacts are uploaded periodically (controlled by `--upload-every`). After a crash or pause, local typically has more trials than WandB.
+
 Example:
 ```bash
 # Initial run with 50 trials
-python my_hpo.py --n-trials 50 --sampler tpe
+python my_hpo.py --n-trials 50 --sampler tpe --wandb my-project --study-name exp1
 
-# Resume without specifying n_trials (continues with 50)
-python my_hpo.py --resume-from checkpoint.pkl
+# Resume from local checkpoint (most trials)
+python my_hpo.py --resume-from local
+
+# Resume from WandB (when working across machines)
+python my_hpo.py --resume-from latest --wandb my-project --study-name exp1
 
 # Resume and extend to 100 trials
-python my_hpo.py --resume-from checkpoint.pkl --n-trials 100
+python my_hpo.py --resume-from local --n-trials 100
+
+# Resume from explicit file
+python my_hpo.py --resume-from /path/to/study.pkl
 ```
+
+#### Checkpoint Paths
+
+Local checkpoints are stored at:
+```
+checkpoints/{wandb_project}/{study_name}/study.pkl
+```
+
+If no WandB project is configured, the path is:
+```
+checkpoints/{study_name}/study.pkl
+```
+
+### Auto-Restart for Memory Management
+
+HPO runs can accumulate GPU memory over many trials. LightningTune includes an auto-restart feature that restarts the Python process after each checkpoint save to reclaim memory.
+
+**Enabled by default** - The process exits with code 42 after saving, signaling the wrapper script to restart.
+
+CLI flags:
+- `--debug-no-restart` - Disable auto-restart (for debugging)
+
+```bash
+# Normal run (auto-restart enabled)
+python my_hpo.py --n-trials 100
+
+# Debugging without restarts
+python my_hpo.py --n-trials 100 --debug-no-restart
+```
+
+When auto-restart triggers, the process:
+1. Saves checkpoint locally
+2. Exits with code 42
+3. Wrapper script (if using one) relaunches with `--resume-from local`
 
 ### Configuration Merging
 

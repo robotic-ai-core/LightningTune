@@ -135,10 +135,18 @@ session_info = {
 
 ### Resume Strategy
 ```
-resume_from='latest'
-  ├─ Try local path: checkpoints/{wandb_project}/{study_name}/study.pkl
-  ├─ Try WandB API: {wandb_project}/{study_name}_checkpoint:latest
-  └─ Fallback: Generic session loader
+resume_from options:
+  ├─ 'local'   → Load from local checkpoint (most up-to-date)
+  │              Path: checkpoints/{wandb_project}/{study_name}/study.pkl
+  ├─ 'latest'  → Load from WandB artifact (when --wandb is set)
+  │              Artifact: {wandb_project}/{study_name}_checkpoint:latest
+  ├─ 'vN'      → Load specific WandB version (e.g., 'v5')
+  └─ '/path'   → Load from explicit file path
+
+Why local vs WandB matters:
+  - Local checkpoints are saved after EVERY trial
+  - WandB artifacts are uploaded every N trials (--upload-every)
+  - After a crash, local may have more trials than WandB
 
 Restoration:
   1. Load study, extract sampler/pruner states
@@ -146,6 +154,30 @@ Restoration:
   3. Restore saved CLI arguments (unless explicitly overridden)
   4. Handle n_trials extension if requested > saved
   5. Resume from exact trial count
+```
+
+### Auto-Restart for Memory Management
+```
+Problem: GPU/CPU memory accumulates over many trials
+Solution: Process restart after each checkpoint save
+
+Enabled by default (via CLI):
+  - HPORunner sets restart_on_save=True unless --debug-no-restart
+
+Flow:
+  1. Complete trial N
+  2. Check if save_every_n_trials reached
+  3. Save checkpoint locally
+  4. Exit with code 42
+  5. Wrapper script relaunches with --resume-from local
+  6. Continue from trial N+1 with fresh memory
+
+CLI Flags:
+  --debug-no-restart    # Disable auto-restart (for debugging)
+
+Exit Code 42:
+  - Special code signals "restart needed" to wrapper scripts
+  - Distinguishes from errors (non-zero) and success (0)
 ```
 
 ## Search Space Abstractions
@@ -364,17 +396,26 @@ study = runner.run_from_cli()
 # Start fresh
 python train_hpo.py --n-trials 100 --wandb my-project --study-name exp1
 
-# Resume with same parameters
-python train_hpo.py --n-trials 100 --wandb my-project --study-name exp1 --resume-from latest
+# Resume from local checkpoint (most up-to-date, saved after every trial)
+python train_hpo.py --resume-from local
 
-# Resume and extend
-python train_hpo.py --n-trials 200 --wandb my-project --study-name exp1 --resume-from latest
+# Resume from WandB (for cross-machine workflows)
+python train_hpo.py --resume-from latest --wandb my-project --study-name exp1
+
+# Resume and extend trials
+python train_hpo.py --resume-from local --n-trials 200
+
+# Resume from specific WandB version
+python train_hpo.py --resume-from v5 --wandb my-project --study-name exp1
+
+# Resume from explicit file path
+python train_hpo.py --resume-from /path/to/study.pkl
 
 # Override config on CLI
 python train_hpo.py --model.init_args.dropout 0.2 --data.init_args.batch_size 64
 
-# Local resume (no WandB)
-python train_hpo.py --resume-from checkpoints/my-project/exp1/
+# Disable auto-restart (for debugging)
+python train_hpo.py --n-trials 10 --debug-no-restart
 ```
 
 ### Programmatic Usage (no CLI)

@@ -1,4 +1,9 @@
-# Complete Pause/Resume Implementation Guide
+# Complete Pause/Resume Implementation Guide (Ray Tune)
+
+> **Note:** This guide covers the Ray Tune integration. For Optuna-based HPO (recommended), see:
+> - [README.md](../README.md) - Quick start
+> - [hpo_runner_usage.md](hpo_runner_usage.md) - HPORunner guide
+> - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Architecture reference
 
 ## Overview
 
