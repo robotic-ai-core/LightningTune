@@ -334,28 +334,39 @@ class HPORunner:
         return value_str
 
     def _load_checkpoint(self, resume_from: str) -> Optional[Dict[str, Any]]:
-        """Load checkpoint from file or WandB."""
-        # First try local file (explicit path)
-        if os.path.exists(resume_from):
-            with open(resume_from, 'rb') as f:
-                checkpoint = pickle.load(f)
-                return checkpoint
+        """Load checkpoint from file or WandB.
 
-        # For "latest" alias, try local checkpoint first (faster and more reliable)
-        if resume_from == "latest":
+        Args:
+            resume_from: One of:
+                - "local" or "local:latest" - load from local checkpoint directory
+                - "latest" or "vN" - load from WandB (when --wandb is set)
+                - "/path/to/file.pkl" - load from explicit file path
+        """
+        # Handle "local" or "local:latest" - explicit local checkpoint
+        if resume_from == "local" or resume_from == "local:latest":
             local_checkpoint_path = self._get_local_checkpoint_path(
                 study_name=self.args.study_name,
                 wandb_project=self.args.wandb,
             )
             if local_checkpoint_path.exists():
-                logger.info(f"📂 Found local checkpoint: {local_checkpoint_path}")
+                logger.info(f"📂 Loading local checkpoint: {local_checkpoint_path}")
                 with open(local_checkpoint_path, 'rb') as f:
                     checkpoint = pickle.load(f)
                     return checkpoint
+            else:
+                logger.error(f"❌ Local checkpoint not found: {local_checkpoint_path}")
+                return None
+
+        # Try explicit file path
+        if os.path.exists(resume_from):
+            logger.info(f"📂 Loading checkpoint from file: {resume_from}")
+            with open(resume_from, 'rb') as f:
+                checkpoint = pickle.load(f)
+                return checkpoint
 
         # Try WandB if project is configured (for "latest" or version aliases like "v5")
         if self.args.wandb:
-            # Create temporary optimizer just to load from WandB
+            logger.info(f"☁️  Loading checkpoint from WandB: {resume_from}")
             temp_optimizer = PausibleOptunaOptimizer(
                 base_config={"dummy": "config"},
                 search_space=lambda trial: {},
@@ -367,6 +378,18 @@ class HPORunner:
             checkpoint = temp_optimizer.load_study_from_wandb(resume_from)
             if checkpoint:
                 return checkpoint
+
+        # Fallback: try local checkpoint for "latest" when no WandB
+        if resume_from == "latest":
+            local_checkpoint_path = self._get_local_checkpoint_path(
+                study_name=self.args.study_name,
+                wandb_project=self.args.wandb,
+            )
+            if local_checkpoint_path.exists():
+                logger.info(f"📂 Loading local checkpoint (no WandB): {local_checkpoint_path}")
+                with open(local_checkpoint_path, 'rb') as f:
+                    checkpoint = pickle.load(f)
+                    return checkpoint
 
         logger.error(f"❌ Could not load checkpoint: {resume_from}")
         return None
@@ -518,17 +541,6 @@ class HPORunner:
         if not has_restart_flag:
             cmd.append("--restart-on-save")
 
-        # Compute local checkpoint path for consistent resume source
-        # This avoids the stale WandB checkpoint issue: when restart_every_trial=True,
-        # local checkpoint is saved after every trial but WandB is only uploaded every N trials.
-        # By always passing the local path, child processes use a single source of truth.
-        temp_parser = self._create_parser()
-        temp_args, _ = temp_parser.parse_known_args(argv)
-        local_checkpoint_path = self._get_local_checkpoint_path(
-            study_name=temp_args.study_name,
-            wandb_project=temp_args.wandb,
-        )
-
         # Add environment flag to prevent nested auto-restart
         # Note: This copies all environment variables, which is standard practice
         # for subprocess.run(). Be aware credentials are propagated.
@@ -564,14 +576,13 @@ class HPORunner:
                             continue
                         cleaned_cmd.append(arg)
 
-                    # Add new resume flag - use actual local path for single source of truth
+                    # Add new resume flag - use "local" to load from local checkpoint
                     # This avoids the stale WandB checkpoint bug where child would load
                     # an older WandB checkpoint instead of the fresh local checkpoint
-                    cmd = cleaned_cmd + ["--resume-from", str(local_checkpoint_path)]
+                    cmd = cleaned_cmd + ["--resume-from", "local"]
 
                     logger.info(f"\n{'='*60}")
                     logger.info(f"🔄 Restart #{restart_count}: Resuming from local checkpoint")
-                    logger.info(f"   {local_checkpoint_path}")
                     logger.info(f"{'='*60}\n")
                 else:
                     logger.info(f"\n🚀 Starting initial HPO run\n")

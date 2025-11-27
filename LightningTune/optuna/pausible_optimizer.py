@@ -408,8 +408,7 @@ class PausibleOptunaOptimizer:
         Returns:
             Optuna study with results
         """
-        # Debug: Log n_trials value at entry
-        logger.info(f"[DEBUG] optimize() called with n_trials={n_trials}, resume_from={resume_from}")
+        logger.debug(f"optimize() called with n_trials={n_trials}, resume_from={resume_from}")
 
         # Handle automatic argument persistence
         if self.persist_args and self.args:
@@ -477,12 +476,23 @@ class PausibleOptunaOptimizer:
                     logger.info(f"💾 Trying local checkpoint fallback: {self.local_checkpoint_dir}")
                     session_info = persist_load_study_from_local(str(self.local_checkpoint_dir))
             else:
-                # Alias like 'latest' or 'vN' → prefer WandB first
-                # Support both positional and keyword usage in tests
-                session_info = self.load_study_from_wandb(resume_from)
-                if session_info is None and self.local_checkpoint_dir and self.local_checkpoint_dir.exists():
-                    logger.info(f"💾 Trying local checkpoint fallback: {self.local_checkpoint_dir}")
-                    session_info = persist_load_study_from_local(str(self.local_checkpoint_dir))
+                # Alias like 'latest' or 'vN' - try local first, then WandB
+                # Note: The parent orchestrator (run_with_auto_restart) now passes explicit local
+                # paths for subprocess restarts, so this branch is mainly for manual resume.
+                # When users manually use --resume-from latest, prefer local checkpoint since
+                # it's more up-to-date (saved every trial vs WandB uploaded every N trials).
+                local_session = None
+                if self.local_checkpoint_dir and self.local_checkpoint_dir.exists():
+                    local_session = persist_load_study_from_local(str(self.local_checkpoint_dir))
+
+                if local_session:
+                    local_trials = local_session.get("total_trials_completed", 0)
+                    logger.info(f"💾 Using local checkpoint ({local_trials} trials)")
+                    session_info = local_session
+                else:
+                    # No local checkpoint, try WandB
+                    session_info = self.load_study_from_wandb(resume_from)
+
                 # Final generic fallback
                 if session_info is None:
                     session_info = persist_load_saved_session(
@@ -509,6 +519,14 @@ class PausibleOptunaOptimizer:
             study = session_info["study"]
             self.total_trials_completed = session_info["total_trials_completed"]
             self.should_pause = False  # Reset pause flag when resuming
+
+            # Log resume info (useful for verifying correct checkpoint was loaded)
+            loaded_trial_count = len(study.trials)
+            logger.debug(f"Loaded study with {loaded_trial_count} trials, "
+                        f"total_trials_completed={self.total_trials_completed}")
+            if loaded_trial_count > 0:
+                last_trial = study.trials[-1]
+                logger.debug(f"Last trial: number={last_trial.number}, state={last_trial.state}")
 
             # Handle persistent config overrides
             saved_config_overrides = session_info.get("config_overrides", {}) or {}
@@ -768,8 +786,8 @@ class PausibleOptunaOptimizer:
             trials_in_batch = 0
             last_checkpoint_trial_count = self.total_trials_completed
         
-        # Debug: Log n_trials value at loop start
-        logger.info(f"[DEBUG] Starting optimization loop: total_trials_completed={self.total_trials_completed}, n_trials={n_trials}")
+        logger.debug(f"Starting optimization loop: total_trials_completed={self.total_trials_completed}, n_trials={n_trials}")
+        logger.debug(f"Study has {len(study.trials)} trials, next trial will be number {len(study.trials)}")
 
         while self.total_trials_completed < n_trials and not self.should_pause:
             # Record number of finished trials (COMPLETE + PRUNED) before this trial
@@ -881,7 +899,27 @@ class PausibleOptunaOptimizer:
                             last_checkpoint_trial_count = self.total_trials_completed
                             trials_in_batch = 0
 
-                    # Handle restart after trial
+                    # Check for pause or quit request BEFORE restart logic
+                    # This ensures 'p' works even with restart_every_trial=True
+                    pause_check_result = self._update_pause_from_keyboard()
+                    # ALWAYS log pause state (not just debug) to diagnose issues
+                    logger.info(f"[PAUSE] After trial {trial_number}: pause_check={pause_check_result}, "
+                               f"_pause_requested={self._pause_requested}, "
+                               f"restart_on_save={self.restart_on_save}, "
+                               f"restart_every_trial={self.restart_every_trial}")
+                    if pause_check_result:
+                        self.should_pause = True
+                        logger.info("\n⏸️  Executing pause after trial completion...")
+                        logger.info(f"   Breaking out of trial loop (will NOT call sys.exit(42))")
+                        if self.wandb_project:
+                            logger.info("   Study will be saved to WandB for easy resume")
+                        break
+                    if self._quit_after_current:
+                        logger.info("\n🛑 Quit requested. Stopping after current trial.")
+                        self.should_pause = True
+                        break
+
+                    # Handle restart after trial (only if not pausing)
                     # When restart_every_trial=True, restart after EVERY trial for complete memory isolation
                     # When restart_every_trial=False, only restart when WandB upload happens
                     if self.restart_on_save:
@@ -903,23 +941,6 @@ class PausibleOptunaOptimizer:
                             logger.info(f"   Resume with: --resume-from {resume_path}")
                             import sys
                             sys.exit(42)  # Exit code 42 signals successful save + restart
-
-                    # Check for pause or quit request after trial completes
-                    pause_check_result = self._update_pause_from_keyboard()
-                    logger.debug(f"[PAUSE DEBUG] After trial {trial_number}: _update_pause_from_keyboard() = {pause_check_result}, "
-                                f"_pause_requested = {self._pause_requested}, "
-                                f"_use_keyboard_service = {self._use_keyboard_service}, "
-                                f"_polling_active = {getattr(self, '_polling_active', False)}")
-                    if pause_check_result:
-                        self.should_pause = True
-                        logger.info("\n⏸️  Executing pause after trial completion...")
-                        if self.wandb_project:
-                            logger.info("   Study will be saved to WandB for easy resume")
-                        break
-                    if self._quit_after_current:
-                        logger.info("\n🛑 Quit requested. Stopping after current trial.")
-                        self.should_pause = True
-                        break
                 else:
                     # Trial failed (actual error, not pruning)
                     logger.info(f"✗ Trial {trial_number}: ❌ FAILED | {self.total_trials_completed}/{n_trials} complete")
@@ -997,13 +1018,9 @@ class PausibleOptunaOptimizer:
                 study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
                 if study_was_saved:
                     last_checkpoint_trial_count = self.total_trials_completed
-
-                    # Exit for auto-restart if enabled
-                    if self.restart_on_save:
-                        logger.info(f"\n🔄 restart_on_save enabled: Exiting after pause save for process restart")
-                        logger.info(f"   Study saved with {self.total_trials_completed} trials")
-                        import sys
-                        sys.exit(42)  # Exit code 42 signals successful save + restart
+                    # NOTE: For pause, we do NOT call sys.exit(42) because that would
+                    # trigger a restart. We want to exit cleanly. Exit code 43 signals
+                    # "pause requested - do not restart"
                 else:
                     logger.error("⚠️  Failed to save study for pause - checkpoint may be incomplete")
         elif self.wandb_project and self.total_trials_completed > last_checkpoint_trial_count:
