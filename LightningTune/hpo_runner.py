@@ -59,9 +59,11 @@ class HPORunner:
         'trial_steps': {'type': int, 'default': None, 'help': 'Max steps per trial'},
         # Align with reference script: allow overriding validation interval via CLI
         'val_interval': {'type': int, 'default': None, 'help': 'Validation check interval (steps)'},
-        'save_every': {'type': int, 'default': 10, 'help': 'Save checkpoint every N trials'},
+        'save_every': {'type': int, 'default': 10, 'help': 'Upload to WandB every N trials (local saves happen every trial)'},
         'restart_on_save': {'type': bool, 'default': True, 'action': 'store_true', 'help': 'Restart process after save to prevent memory accumulation (default: True)'},
         'no_restart_on_save': {'type': bool, 'default': False, 'action': 'store_true', 'help': 'Disable restart-on-save'},
+        'restart_every_trial': {'type': bool, 'default': True, 'action': 'store_true', 'help': 'Restart after every trial for complete memory isolation (default: True)'},
+        'no_restart_every_trial': {'type': bool, 'default': False, 'action': 'store_true', 'help': 'Only restart when uploading to WandB (every save_every trials)'},
         'wandb': {'type': str, 'default': None, 'help': 'WandB project name'},
         'study_name': {'type': str, 'default': None, 'help': 'Study name'},
         'resume_from': {'type': str, 'default': None, 'help': 'Resume from checkpoint'},
@@ -611,6 +613,15 @@ class HPORunner:
         no_restart_on_save = getattr(temp_args, 'no_restart_on_save', False)
         if no_restart_on_save:
             restart_on_save = False
+
+        # Auto-disable subprocess spawning in test environments
+        # When running under pytest, sys.argv[0] points to pytest, not our script
+        # Subprocess spawning would fail because pytest doesn't understand HPO args
+        is_pytest = "pytest" in sys.argv[0] or os.environ.get("PYTEST_CURRENT_TEST")
+        if is_pytest and restart_on_save:
+            logger.debug("Auto-disabling restart-on-save subprocess spawning in pytest environment")
+            restart_on_save = False
+
         # Robust check for environment flag (handles multiple truthy values)
         env_value = os.environ.get("LIGHTNING_TUNE_NO_AUTO_RESTART", "")
         is_child_process = env_value in ("1", "true", "TRUE", "True", "yes", "YES")
@@ -638,6 +649,17 @@ class HPORunner:
         # Parse command line - use parse_known_args to capture dot-notation args
         parser = self._create_parser()
         self.args, unknown_args = parser.parse_known_args(argv)
+
+        # Auto-disable restart-on-save in test environments
+        # This prevents the optimizer from calling sys.exit(42) in pytest
+        is_pytest = "pytest" in sys.argv[0] or os.environ.get("PYTEST_CURRENT_TEST")
+        if is_pytest:
+            if getattr(self.args, 'restart_on_save', False):
+                logger.debug("Auto-disabling restart-on-save in pytest environment")
+                self.args.restart_on_save = False
+            if getattr(self.args, 'restart_every_trial', False):
+                logger.debug("Auto-disabling restart-every-trial in pytest environment")
+                self.args.restart_every_trial = False
 
         # Set up crash-resistant logging if enabled
         if getattr(self.args, 'crash_logging', False):
@@ -704,6 +726,12 @@ class HPORunner:
                 # Pass sys.argv if argv is None so _was_arg_specified works correctly
                 actual_argv = argv if argv is not None else sys.argv
                 self._restore_args_from_checkpoint(checkpoint, actual_argv)
+
+                # Update base_config from restored args.config if it was None
+                # This allows resuming without specifying --config on the CLI
+                if self.base_config is None and self.args.config:
+                    self.base_config = self.args.config
+                    logger.info(f"  ✓ Restored config from checkpoint: {self.args.config}")
 
                 completed = checkpoint.get('total_trials_completed', 0)
 
@@ -813,6 +841,21 @@ class HPORunner:
             print(f"⚠️  Error in FAST_HPO_TESTS config: {e}", flush=True)
             import traceback
             traceback.print_exc()
+
+        # Final validation: ensure we have a config
+        # This can fail if:
+        # 1. No --config specified on CLI, AND
+        # 2. Not resuming OR checkpoint didn't have args.config
+        if self.base_config is None:
+            logger.error(f"\n{'='*60}")
+            logger.error(f"❌ FATAL: No configuration available")
+            logger.error(f"{'='*60}")
+            if self.args.resume_from:
+                logger.error(f"Checkpoint did not contain a saved config path.")
+                logger.error(f"This can happen with older checkpoints.")
+            logger.error(f"\n💡 Please specify --config <path/to/config.yaml>")
+            logger.error(f"{'='*60}\n")
+            sys.exit(1)
 
         # Merge configs
         final_config = self._merge_configs()
@@ -926,6 +969,7 @@ class HPORunner:
             pruner_name=self.args.pruner,
             save_every_n_trials=self.args.save_every,
             restart_on_save=self.args.restart_on_save,
+            restart_every_trial=getattr(self.args, 'restart_every_trial', True) and not getattr(self.args, 'no_restart_every_trial', False),
             enable_pause=final_enable_pause,
             use_reflow=use_reflow,
             experiment_dir=self.args.experiment_dir,

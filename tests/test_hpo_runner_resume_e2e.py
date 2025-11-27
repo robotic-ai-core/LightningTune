@@ -183,20 +183,23 @@ trainer:
             assert 'data.num_workers' in resumed_config_overrides, "CLI override should be restored on resume"
             assert resumed_config_overrides['data.num_workers'] == 8, "CLI override value should be restored"
 
-    def test_resume_without_config_arg_fails(self, tmp_path):
-        """Test that resume without --config fails gracefully when config is required."""
-        # Create a checkpoint that expects a config
+    def test_resume_without_config_fails_with_old_checkpoint(self, tmp_path):
+        """Test that resume fails gracefully when checkpoint lacks args.config and no --config provided.
+
+        This validates the error handling for older checkpoints that don't have args.config saved.
+        Users should see a clear error message directing them to specify --config.
+        """
+        # Create a checkpoint WITHOUT args.config (simulating old checkpoint)
         checkpoint_dir = tmp_path / "checkpoints"
         checkpoint_dir.mkdir()
         checkpoint_file = checkpoint_dir / "study.pkl"
 
-        # Create minimal checkpoint
         import optuna
         study = optuna.create_study()
         session = {
             'study': study,
             'total_trials_completed': 3,
-            'config_overrides': {},
+            'config_overrides': {},  # No args.config here
         }
         with open(checkpoint_file, 'wb') as f:
             pickle.dump(session, f)
@@ -216,17 +219,11 @@ trainer:
             '--no-reflow',
         ]
 
-        # This should work - config is optional if not needed by model
-        # Just verify it doesn't crash
-        with patch('LightningTune.hpo_runner.PausibleOptunaOptimizer') as mock_optimizer_class:
-            mock_study = Mock()
-            mock_study.trials = [Mock(state='COMPLETE') for _ in range(5)]
-            mock_optimizer = Mock()
-            mock_optimizer.optimize.return_value = mock_study
-            mock_optimizer_class.return_value = mock_optimizer
+        # Should fail with exit code 1 and clear error message
+        with pytest.raises(SystemExit) as exc_info:
+            runner.run_from_cli(argv=argv)
 
-            study = runner.run_from_cli(argv=argv)
-            assert study is not None
+        assert exc_info.value.code == 1, "Should exit with code 1 when config is missing"
 
     def test_resume_preserves_trial_steps(self, tmp_path):
         """Test that --trial-steps is preserved across resume."""

@@ -101,6 +101,7 @@ class PausibleOptunaOptimizer:
         pruner_name: str = "median",
         save_every_n_trials: int = 10,
         restart_on_save: bool = False,
+        restart_every_trial: bool = True,  # When restart_on_save=True, restart after every trial
         enable_pause: bool = True,
         use_reflow: bool = True,  # Deprecated - always uses LightningReflow now
         checkpoint_top_k: int = 0,  # Number of best trial checkpoints to keep. 0 disables checkpointing.
@@ -126,7 +127,9 @@ class PausibleOptunaOptimizer:
             study_name: Name for the study (used in WandB artifacts)
             sampler_name: Name of Optuna sampler to use
             pruner_name: Name of Optuna pruner to use
-            save_every_n_trials: Save checkpoint every N trials
+            save_every_n_trials: Upload to WandB every N trials (local saves happen every trial when restart_every_trial=True)
+            restart_on_save: Whether to exit for process restart after saving
+            restart_every_trial: When restart_on_save=True, restart after every trial for complete memory isolation
             enable_pause: Whether to enable 'p' key pause functionality
             use_reflow: Deprecated - always uses LightningReflow now (parameter kept for backward compatibility)
             checkpoint_top_k: Number of best trial checkpoints to keep. 0 disables checkpointing (default).
@@ -169,6 +172,7 @@ class PausibleOptunaOptimizer:
         self.pruner_name = pruner_name
         self.save_every_n_trials = save_every_n_trials
         self.restart_on_save = restart_on_save
+        self.restart_every_trial = restart_every_trial
         self.enable_pause = enable_pause
         self.use_reflow = use_reflow
         self.checkpoint_top_k = checkpoint_top_k
@@ -853,13 +857,12 @@ class PausibleOptunaOptimizer:
                             config_overrides=self.persistent_config_overrides,
                         )
 
-                    # Periodic save (WandB or local-only)
+                    # Periodic WandB upload (when save_every_n_trials is reached)
+                    wandb_save_succeeded = False
                     if trials_in_batch >= self.save_every_n_trials:
-                        save_succeeded = False
-
                         # Try WandB save if configured
                         if self.wandb_project:
-                            save_succeeded = persist_save_study_to_wandb(
+                            wandb_save_succeeded = persist_save_study_to_wandb(
                                 self.wandb_project,
                                 study_name=self.study_name,
                                 study=study,
@@ -868,30 +871,38 @@ class PausibleOptunaOptimizer:
                                 pruner_name=self.pruner_name,
                                 config_overrides=self.persistent_config_overrides,
                             )
-                            if not save_succeeded:
+                            if wandb_save_succeeded:
+                                logger.info(f"☁️  Uploaded to WandB (trial {self.total_trials_completed})")
+                            else:
                                 logger.warning("⚠️  WandB save failed")
-                        else:
-                            # No WandB, use local save success
-                            save_succeeded = local_save_success
-                            if save_succeeded:
-                                logger.info(f"💾 Local checkpoint saved (trial {self.total_trials_completed})")
 
-                        # Handle restart-on-save if save was successful
-                        if save_succeeded:
+                        # Reset batch counter after WandB upload attempt
+                        if wandb_save_succeeded or not self.wandb_project:
                             last_checkpoint_trial_count = self.total_trials_completed
                             trials_in_batch = 0
 
-                            # Exit for auto-restart if enabled
-                            if self.restart_on_save:
-                                resume_path = "latest" if self.wandb_project else str(self.local_checkpoint_dir)
-                                logger.info(f"\n🔄 restart_on_save enabled: Exiting after save for process restart")
-                                logger.info(f"   Study saved with {self.total_trials_completed} trials")
-                                logger.info(f"   Resume with: --resume-from {resume_path}")
-                                import sys
-                                sys.exit(42)  # Exit code 42 signals successful save + restart
+                    # Handle restart after trial
+                    # When restart_every_trial=True, restart after EVERY trial for complete memory isolation
+                    # When restart_every_trial=False, only restart when WandB upload happens
+                    if self.restart_on_save:
+                        should_restart = False
+                        if self.restart_every_trial:
+                            # Restart after every trial if local save succeeded
+                            should_restart = local_save_success
                         else:
-                            # Save failed, reset counter to avoid retry loop
-                            trials_in_batch = 0
+                            # Legacy behavior: only restart when save_every_n_trials is reached
+                            should_restart = (wandb_save_succeeded or (not self.wandb_project and local_save_success and trials_in_batch == 0))
+
+                        if should_restart:
+                            resume_path = "latest" if self.wandb_project else str(self.local_checkpoint_dir)
+                            if self.restart_every_trial:
+                                logger.info(f"\n🔄 Per-trial restart: Exiting for process restart (memory isolation)")
+                            else:
+                                logger.info(f"\n🔄 restart_on_save enabled: Exiting after save for process restart")
+                            logger.info(f"   Study saved with {self.total_trials_completed} trials")
+                            logger.info(f"   Resume with: --resume-from {resume_path}")
+                            import sys
+                            sys.exit(42)  # Exit code 42 signals successful save + restart
 
                     # Check for pause or quit request after trial completes
                     pause_check_result = self._update_pause_from_keyboard()
