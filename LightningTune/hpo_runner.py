@@ -181,6 +181,42 @@ class HPORunner:
             return params
         return wrapper
 
+    def _get_local_checkpoint_path(
+        self,
+        study_name: Optional[str] = None,
+        wandb_project: Optional[str] = None,
+    ) -> Path:
+        """
+        Compute the local checkpoint path for a study.
+
+        The path follows the convention:
+        - With WandB: checkpoints/<wandb_project>/<study_name>/study.pkl
+        - Without WandB: checkpoints/<study_name>/study.pkl
+
+        Args:
+            study_name: Study name (defaults to self.args.study_name or self.default_study_name)
+            wandb_project: WandB project name (defaults to self.args.wandb if available)
+
+        Returns:
+            Path to the local checkpoint file
+        """
+        # Resolve study_name
+        if study_name is None:
+            if self.args and hasattr(self.args, 'study_name') and self.args.study_name:
+                study_name = self.args.study_name
+            else:
+                study_name = self.default_study_name or "hpo_study"
+
+        # Resolve wandb_project
+        if wandb_project is None and self.args and hasattr(self.args, 'wandb'):
+            wandb_project = self.args.wandb
+
+        base_ckpt_dir = Path.cwd() / "checkpoints"
+        if wandb_project:
+            return base_ckpt_dir / str(wandb_project) / str(study_name) / "study.pkl"
+        else:
+            return base_ckpt_dir / str(study_name) / "study.pkl"
+
     def _create_parser(self) -> argparse.ArgumentParser:
         """Create argument parser with all defined CLI arguments."""
         parser = argparse.ArgumentParser(
@@ -299,13 +335,25 @@ class HPORunner:
 
     def _load_checkpoint(self, resume_from: str) -> Optional[Dict[str, Any]]:
         """Load checkpoint from file or WandB."""
-        # First try local file
+        # First try local file (explicit path)
         if os.path.exists(resume_from):
             with open(resume_from, 'rb') as f:
                 checkpoint = pickle.load(f)
                 return checkpoint
 
-        # Try WandB if project is configured
+        # For "latest" alias, try local checkpoint first (faster and more reliable)
+        if resume_from == "latest":
+            local_checkpoint_path = self._get_local_checkpoint_path(
+                study_name=self.args.study_name,
+                wandb_project=self.args.wandb,
+            )
+            if local_checkpoint_path.exists():
+                logger.info(f"📂 Found local checkpoint: {local_checkpoint_path}")
+                with open(local_checkpoint_path, 'rb') as f:
+                    checkpoint = pickle.load(f)
+                    return checkpoint
+
+        # Try WandB if project is configured (for "latest" or version aliases like "v5")
         if self.args.wandb:
             # Create temporary optimizer just to load from WandB
             temp_optimizer = PausibleOptunaOptimizer(
@@ -317,19 +365,8 @@ class HPORunner:
                 study_name=self.args.study_name or self.default_study_name,
             )
             checkpoint = temp_optimizer.load_study_from_wandb(resume_from)
-            return checkpoint
-
-        # Try local checkpoint directory for "latest" (no WandB)
-        if resume_from == "latest":
-            from pathlib import Path
-            # Try to find local checkpoint in checkpoints/<study_name>/study.pkl
-            study_name = self.args.study_name or self.default_study_name
-            local_checkpoint_path = Path("checkpoints") / study_name / "study.pkl"
-            if local_checkpoint_path.exists():
-                logger.info(f"📂 Found local checkpoint: {local_checkpoint_path}")
-                with open(local_checkpoint_path, 'rb') as f:
-                    checkpoint = pickle.load(f)
-                    return checkpoint
+            if checkpoint:
+                return checkpoint
 
         logger.error(f"❌ Could not load checkpoint: {resume_from}")
         return None
@@ -481,6 +518,17 @@ class HPORunner:
         if not has_restart_flag:
             cmd.append("--restart-on-save")
 
+        # Compute local checkpoint path for consistent resume source
+        # This avoids the stale WandB checkpoint issue: when restart_every_trial=True,
+        # local checkpoint is saved after every trial but WandB is only uploaded every N trials.
+        # By always passing the local path, child processes use a single source of truth.
+        temp_parser = self._create_parser()
+        temp_args, _ = temp_parser.parse_known_args(argv)
+        local_checkpoint_path = self._get_local_checkpoint_path(
+            study_name=temp_args.study_name,
+            wandb_project=temp_args.wandb,
+        )
+
         # Add environment flag to prevent nested auto-restart
         # Note: This copies all environment variables, which is standard practice
         # for subprocess.run(). Be aware credentials are propagated.
@@ -516,11 +564,14 @@ class HPORunner:
                             continue
                         cleaned_cmd.append(arg)
 
-                    # Add new resume flag
-                    cmd = cleaned_cmd + ["--resume-from", "latest"]
+                    # Add new resume flag - use actual local path for single source of truth
+                    # This avoids the stale WandB checkpoint bug where child would load
+                    # an older WandB checkpoint instead of the fresh local checkpoint
+                    cmd = cleaned_cmd + ["--resume-from", str(local_checkpoint_path)]
 
                     logger.info(f"\n{'='*60}")
-                    logger.info(f"🔄 Restart #{restart_count}: Resuming from latest checkpoint")
+                    logger.info(f"🔄 Restart #{restart_count}: Resuming from local checkpoint")
+                    logger.info(f"   {local_checkpoint_path}")
                     logger.info(f"{'='*60}\n")
                 else:
                     logger.info(f"\n🚀 Starting initial HPO run\n")
@@ -950,11 +1001,8 @@ class HPORunner:
         # Determine an absolute local checkpoint directory so local resume paths are reliable
         # Use current working directory as the anchor to avoid module-relative saves
         try:
-            base_ckpt_dir = Path.cwd() / "checkpoints"
-            if self.args.wandb:
-                _local_ckpt_dir = base_ckpt_dir / str(self.args.wandb) / str(self.args.study_name)
-            else:
-                _local_ckpt_dir = base_ckpt_dir / str(self.args.study_name)
+            # Get the directory (parent of study.pkl file path)
+            _local_ckpt_dir = self._get_local_checkpoint_path().parent
         except Exception:
             _local_ckpt_dir = None
 
@@ -985,8 +1033,7 @@ class HPORunner:
 
         # Run optimization with crash logging protection
         try:
-            # Debug: Log n_trials value before calling optimize
-            logger.info(f"[DEBUG] Calling optimizer.optimize with n_trials={self.args.n_trials}")
+            logger.debug(f"Calling optimizer.optimize with n_trials={self.args.n_trials}")
 
             study = optimizer.optimize(
                 n_trials=self.args.n_trials,
