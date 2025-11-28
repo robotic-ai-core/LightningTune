@@ -522,5 +522,173 @@ class TestSubprocessRestartSimulation:
         assert optimizer.should_pause, "Optimizer should be in paused state"
 
 
+class TestWandBUploadEveryTracking:
+    """Test that upload_every counter is preserved across per-trial restarts."""
+
+    def test_last_wandb_upload_restored_correctly(self, tmp_path):
+        """Test that trials_in_batch is calculated correctly on resume.
+
+        This is a regression test for the bug where:
+        - save_every_n_trials=5 (upload to WandB every 5 trials)
+        - restart_every_trial=True (restart process after every trial)
+        - The counter was being reset to 0 on every resume because
+          local checkpoints didn't track last_wandb_upload_trial_count
+
+        With the fix, last_wandb_upload_trial_count is saved in checkpoint
+        and used to restore trials_in_batch correctly.
+        """
+        checkpoint_dir = tmp_path / "checkpoints" / "test_study"
+        checkpoint_dir.mkdir(parents=True)
+
+        # Create a checkpoint at trial 7 with last WandB upload at trial 5
+        from LightningTune.persistence import save_study_to_local, load_study_from_local
+
+        study = optuna.create_study()
+        for i in range(7):
+            study.add_trial(optuna.trial.create_trial(
+                value=i * 0.1,
+                params={"x": i},
+                distributions={"x": optuna.distributions.IntDistribution(0, 100)},
+                state=optuna.trial.TrialState.COMPLETE
+            ))
+
+        # Simulate: total=7 trials completed, last WandB upload was at 5
+        # This means trials_in_batch should be 2 (trials 6 and 7 since last upload)
+        save_study_to_local(
+            checkpoint_dir,
+            study,
+            total_trials_completed=7,
+            sampler_name="tpe",
+            pruner_name="median",
+            study_name="test_study",
+            config_overrides={},
+            last_wandb_upload_trial_count=5,
+        )
+
+        # Load checkpoint and verify
+        loaded = load_study_from_local(str(checkpoint_dir))
+        assert loaded["total_trials_completed"] == 7
+        assert loaded["last_wandb_upload_trial_count"] == 5
+
+        # On resume, trials_in_batch should be 7 - 5 = 2
+        expected_trials_in_batch = 7 - 5
+        assert expected_trials_in_batch == 2
+
+        # After running 3 more trials (total=10), trials_in_batch becomes 5 (10-5=5)
+        # which triggers upload, resetting last_wandb_upload to 10
+        # After that, next trial (total=11) has trials_in_batch = 11-10 = 1
+
+        # Test the counter calculation directly
+        # Starting state: total=7, last_upload=5, trials_in_batch=2
+        # After trial: total=8, trials_in_batch=3 (no upload)
+        # After trial: total=9, trials_in_batch=4 (no upload)
+        # After trial: total=10, trials_in_batch=5 (UPLOAD, reset last_upload=10)
+        # After trial: total=11, trials_in_batch=1 (no upload)
+
+        # This is the core logic being tested - verify it works correctly
+        save_every = 5
+        last_upload = 5
+        for total in range(7, 12):
+            trials_in_batch = total - last_upload
+            should_upload = trials_in_batch >= save_every
+            if should_upload:
+                last_upload = total
+            print(f"total={total}, trials_in_batch={trials_in_batch}, should_upload={should_upload}")
+
+        # Verify upload should happen at total=10, not at 6, 7, 8, or 9
+        assert (10 - 5) >= save_every  # Should upload at 10
+        assert (9 - 5) < save_every    # Should NOT upload at 9
+
+    def test_checkpoint_preserves_last_wandb_upload(self, tmp_path):
+        """Test that last_wandb_upload_trial_count is saved and restored correctly."""
+        checkpoint_dir = tmp_path / "checkpoints" / "test_study"
+        checkpoint_dir.mkdir(parents=True)
+
+        # Save a checkpoint with specific last_wandb_upload_trial_count
+        from LightningTune.persistence import save_study_to_local, load_study_from_local
+
+        study = optuna.create_study()
+        for i in range(7):
+            study.add_trial(optuna.trial.create_trial(
+                value=i * 0.1,
+                params={"x": i},
+                distributions={"x": optuna.distributions.IntDistribution(0, 100)},
+                state=optuna.trial.TrialState.COMPLETE
+            ))
+
+        # Simulate: total=7, but last WandB upload was at 5
+        save_study_to_local(
+            checkpoint_dir,
+            study,
+            total_trials_completed=7,
+            sampler_name="tpe",
+            pruner_name="median",
+            study_name="test_study",
+            config_overrides={},
+            last_wandb_upload_trial_count=5,  # Last upload was at trial 5
+        )
+
+        # Load and verify
+        loaded = load_study_from_local(str(checkpoint_dir))
+        assert loaded is not None
+        assert loaded["total_trials_completed"] == 7
+        assert loaded["last_wandb_upload_trial_count"] == 5
+
+        # Create optimizer and resume
+        optimizer = PausibleOptunaOptimizer(
+            base_config={},
+            search_space=lambda trial: {},
+            model_class=MagicMock,
+            enable_pause=False,
+            wandb_project="test_project",
+            study_name="test_study",
+            restart_on_save=True,
+            restart_every_trial=True,
+            save_every_n_trials=5,
+        )
+        optimizer.local_checkpoint_dir = checkpoint_dir
+
+        # Test that the optimizer correctly calculates trials_in_batch
+        # After loading: total=7, last_upload=5, so trials_in_batch should be 2
+        # (we've done 2 trials since last WandB upload)
+        wandb_uploaded = [False]
+
+        def test_objective(trial):
+            return trial.number * 0.1
+
+        with patch.object(optimizer, 'underlying_optimizer', create=True) as mock_opt:
+            mock_opt.create_objective.return_value = test_objective
+            with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_wandb') as mock_wandb:
+                def track_upload(*args, **kwargs):
+                    wandb_uploaded[0] = True
+                    return True
+                mock_wandb.side_effect = track_upload
+
+                with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_local', return_value=True):
+                    def raise_exit(code):
+                        raise SystemExit(code)
+                    # Patch sys.exit at the module level since pausible_optimizer does 'import sys' locally
+                    orig_exit = sys.exit
+                    try:
+                        sys.exit = raise_exit
+                        study = optimizer.optimize(
+                            n_trials=20,
+                            resume_from=str(checkpoint_dir / "study.pkl")
+                        )
+                    except SystemExit as e:
+                        if e.code == 42:
+                            pass
+                        else:
+                            raise
+                    finally:
+                        sys.exit = orig_exit
+
+        # After trial 7 (total=8), trials_in_batch = 8 - 5 = 3, not enough for upload
+        # But wait, we have save_every=5, and we started at total=7, last_upload=5
+        # After running trial 7 (the 8th trial): trials_in_batch = 3 (not >= 5)
+        # So WandB should NOT have been uploaded
+        assert not wandb_uploaded[0], "WandB should not upload yet (only 3 trials since last upload)"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, '-v'])

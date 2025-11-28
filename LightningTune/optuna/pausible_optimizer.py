@@ -177,6 +177,9 @@ class PausibleOptunaOptimizer:
         self.use_reflow = use_reflow
         self.checkpoint_top_k = checkpoint_top_k
         self.test_mode = test_mode
+
+        # Track last WandB upload for upload-every logic (set during optimize())
+        self._last_wandb_upload_trial_count = 0
         
         # New enhanced features
         self.persist_args = persist_args
@@ -774,17 +777,20 @@ class PausibleOptunaOptimizer:
         # Run trials with periodic saves
         # If resuming, restore the counter state from checkpoint
         # Note: When we load checkpoint, self.total_trials_completed is already set from it
-        # That value IS the last saved count, so we can use it directly
-        # Note: last_checkpoint_trial_count is a LOCAL loop variable (not persisted to disk)
+        # _last_wandb_upload_trial_count tracks when WandB was last uploaded (for upload-every logic)
         if session_info:
-            # Checkpoint's total_trials_completed IS the last saved count
-            checkpoint_trial_count = session_info.get('total_trials_completed', 0)
-            trials_in_batch = self.total_trials_completed - checkpoint_trial_count
-            logger.info(f"📊 Restored save counter: {trials_in_batch}/{self.save_every_n_trials} trials since last save")
-            last_checkpoint_trial_count = checkpoint_trial_count
+            # Use last_wandb_upload_trial_count if available (new checkpoints), otherwise fallback
+            last_wandb_upload = session_info.get('last_wandb_upload_trial_count')
+            if last_wandb_upload is not None:
+                self._last_wandb_upload_trial_count = last_wandb_upload
+            else:
+                # Legacy checkpoint: assume total_trials_completed was the last WandB upload point
+                self._last_wandb_upload_trial_count = session_info.get('total_trials_completed', 0)
+            trials_in_batch = self.total_trials_completed - self._last_wandb_upload_trial_count
+            logger.info(f"📊 Restored save counter: {trials_in_batch}/{self.save_every_n_trials} trials since last WandB upload")
         else:
             trials_in_batch = 0
-            last_checkpoint_trial_count = self.total_trials_completed
+            self._last_wandb_upload_trial_count = self.total_trials_completed
         
         logger.debug(f"Starting optimization loop: total_trials_completed={self.total_trials_completed}, n_trials={n_trials}")
         logger.debug(f"Study has {len(study.trials)} trials, next trial will be number {len(study.trials)}")
@@ -873,6 +879,7 @@ class PausibleOptunaOptimizer:
                             pruner_name=self.pruner_name,
                             study_name=self.study_name,
                             config_overrides=self.persistent_config_overrides,
+                            last_wandb_upload_trial_count=self._last_wandb_upload_trial_count,
                         )
 
                     # Periodic WandB upload (when save_every_n_trials is reached)
@@ -896,7 +903,7 @@ class PausibleOptunaOptimizer:
 
                         # Reset batch counter after WandB upload attempt
                         if wandb_save_succeeded or not self.wandb_project:
-                            last_checkpoint_trial_count = self.total_trials_completed
+                            self._last_wandb_upload_trial_count = self.total_trials_completed
                             trials_in_batch = 0
 
                     # Check for pause or quit request BEFORE restart logic
@@ -1017,13 +1024,13 @@ class PausibleOptunaOptimizer:
                 logger.info(f"💾 Saving study state for pause (with {self.total_trials_completed} finished trials)")
                 study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
                 if study_was_saved:
-                    last_checkpoint_trial_count = self.total_trials_completed
+                    self._last_wandb_upload_trial_count = self.total_trials_completed
                     # NOTE: For pause, we do NOT call sys.exit(42) because that would
                     # trigger a restart. We want to exit cleanly. Exit code 43 signals
                     # "pause requested - do not restart"
                 else:
                     logger.error("⚠️  Failed to save study for pause - checkpoint may be incomplete")
-        elif self.wandb_project and self.total_trials_completed > last_checkpoint_trial_count:
+        elif self.wandb_project and self.total_trials_completed > self._last_wandb_upload_trial_count:
             # Regular final save - only if we have new finished trials since last save
             logger.info(f"💾 Saving final state with {self.total_trials_completed} finished trials")
             study_was_saved = self.save_study_to_wandb(study, self.total_trials_completed)
@@ -1320,6 +1327,7 @@ class PausibleOptunaOptimizer:
             pruner_name=self.pruner_name,
             study_name=self.study_name,
             config_overrides=self.persistent_config_overrides,
+            last_wandb_upload_trial_count=self._last_wandb_upload_trial_count,
         )
 
     def save_study_to_wandb(self, study: optuna.Study, total_trials_completed: int) -> bool:

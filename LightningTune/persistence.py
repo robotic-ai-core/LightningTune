@@ -24,10 +24,15 @@ def save_study_to_local(
     pruner_name: str,
     study_name: str,
     config_overrides: Optional[Dict[str, Any]] = None,
+    last_wandb_upload_trial_count: Optional[int] = None,
 ) -> bool:
     """Save study session to local filesystem.
 
     Writes study.pkl and a small session_args.yaml for quick inspection.
+
+    Args:
+        last_wandb_upload_trial_count: Trial count at last WandB upload. Used to track
+            how many trials since last upload when restart_every_trial=True.
     """
     import yaml
 
@@ -43,6 +48,7 @@ def save_study_to_local(
             "pruner_name": pruner_name,
             "study_name": study_name,
             "config_overrides": config_overrides or {},
+            "last_wandb_upload_trial_count": last_wandb_upload_trial_count,
         }
         with open(local_path, 'wb') as f:
             pickle.dump(session_info, f, protocol=pickle.HIGHEST_PROTOCOL)
