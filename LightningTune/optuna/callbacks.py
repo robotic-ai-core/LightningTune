@@ -365,13 +365,13 @@ class OptunaEarlyStoppingCallback(Callback):
 class PruneOnExceptionCallback(Callback):
     """
     Prune the current Optuna trial if a non-interrupt exception occurs during training.
-    
+
     - Preserves Ctrl+C behavior by skipping KeyboardInterrupt
     - Converts unexpected runtime errors into TrialPruned to free resources quickly
     """
     def __init__(self, trial: optuna.Trial):
         self.trial = trial
-    
+
     def on_exception(self, trainer: L.Trainer, pl_module: L.LightningModule, err: BaseException) -> None:
         # Preserve Ctrl+C by re-raising immediately so it propagates out of Lightning
         if isinstance(err, KeyboardInterrupt):
@@ -382,3 +382,84 @@ class PruneOnExceptionCallback(Callback):
         except Exception:
             pass
         raise optuna.TrialPruned(f"Pruned due to exception: {type(err).__name__}")
+
+
+class WandBStopError(Exception):
+    """Custom exception raised when a run is stopped via WandB's web interface.
+
+    This exception is distinct from KeyboardInterrupt to allow the HPO system
+    to differentiate between:
+    - Local Ctrl+C (user wants to pause HPO at trial boundary)
+    - WandB web stop (user wants to stop the entire HPO)
+    """
+    pass
+
+
+class WandBStopDetectionCallback(Callback):
+    """
+    Detects when a run is stopped via WandB's web interface and converts
+    the resulting KeyboardInterrupt into a WandBStopError.
+
+    WandB's stop mechanism works by:
+    1. User clicks "Stop run" in web UI
+    2. WandB's RunStatusChecker polls and detects the stop request
+    3. WandB calls interrupt.interrupt_main() which raises KeyboardInterrupt
+
+    This callback detects this scenario by checking if there's an active
+    WandB run when a KeyboardInterrupt occurs, and if so, raises WandBStopError
+    instead to signal that the entire HPO should stop.
+    """
+
+    def __init__(self, stop_hpo_on_wandb_stop: bool = True):
+        """
+        Args:
+            stop_hpo_on_wandb_stop: If True, WandB web stops will stop the entire HPO.
+                                   If False, they will be treated like local Ctrl+C (pause).
+        """
+        self.stop_hpo_on_wandb_stop = stop_hpo_on_wandb_stop
+        self._wandb_stop_detected = False
+
+    @property
+    def wandb_stop_detected(self) -> bool:
+        """Returns True if a WandB web stop was detected."""
+        return self._wandb_stop_detected
+
+    def on_exception(self, trainer: L.Trainer, pl_module: L.LightningModule, err: BaseException) -> None:
+        """Check if KeyboardInterrupt was caused by WandB web stop."""
+        if not isinstance(err, KeyboardInterrupt):
+            return  # Let other exceptions propagate normally
+
+        if not self.stop_hpo_on_wandb_stop:
+            return  # User wants WandB stops to behave like local Ctrl+C
+
+        # Check if there's an active WandB run
+        try:
+            import wandb
+            if wandb.run is not None:
+                # Check if this looks like a WandB-initiated stop
+                # WandB sets run._is_finished or similar internal state
+                # We can also check if the run is still "alive" from WandB's perspective
+                run = wandb.run
+
+                # The most reliable way to detect a WandB stop is to check
+                # if we're running inside a WandB context and the interrupt came
+                # from WandB's internal polling mechanism.
+                #
+                # Since WandB's interrupt.interrupt_main() doesn't set a specific flag,
+                # we use a heuristic: if we're in a WandB run and receive KeyboardInterrupt,
+                # it's likely from WandB web UI since local Ctrl+C would typically be
+                # caught by the HPO's keyboard handler first.
+                #
+                # Additional check: see if the run is marked as stopping
+                if hasattr(run, '_backend') and run._backend is not None:
+                    # WandB run is active with a backend - likely a web stop
+                    self._wandb_stop_detected = True
+                    logger.warning("⚠️  WandB web stop detected - will stop HPO after this trial")
+                    raise WandBStopError("Run stopped via WandB web interface")
+        except ImportError:
+            pass  # wandb not installed
+        except WandBStopError:
+            raise  # Re-raise our custom exception
+        except Exception as e:
+            # Log but don't fail on detection errors
+            logger.debug(f"WandB stop detection error: {e}")

@@ -28,7 +28,7 @@ if lightning_reflow_path.exists():
 from lightning_reflow import LightningReflow
 
 from .search_space import OptunaSearchSpace
-from .callbacks import OptunaPruningCallback
+from .callbacks import OptunaPruningCallback, WandBStopDetectionCallback, WandBStopError
 from ..utils.config_utils import apply_dotted_updates, load_config
 
 logger = logging.getLogger(__name__)
@@ -454,6 +454,10 @@ class OptunaDrivenOptimizer:
         except Exception:
             pass
 
+        # Add WandB stop detection callback if WandB is enabled
+        if self.wandb_project:
+            callbacks.append(WandBStopDetectionCallback(stop_hpo_on_wandb_stop=True))
+
         return callbacks
 
     def _instantiate_callback(self, cb_config: Dict[str, Any]) -> Callback:
@@ -666,6 +670,25 @@ class OptunaDrivenOptimizer:
                 from .memory_cleanup import aggressive_cleanup
                 aggressive_cleanup()
 
+                raise
+
+            except WandBStopError:
+                # WandB web stop detected - clean up and re-raise to stop HPO
+                logger.warning(f"Trial {trial.number} stopped via WandB web interface")
+                self._reset_torch_compile_state()
+                self._finalize_wandb(wandb_logger, "stopped")
+                self._cleanup_dataloader_workers(trial.number, reflow, "stopped")
+
+                # Cleanup in exception path
+                if reflow is not None:
+                    del reflow
+                if wandb_logger is not None:
+                    del wandb_logger
+
+                from .memory_cleanup import aggressive_cleanup
+                aggressive_cleanup()
+
+                # Re-raise to signal HPO should stop
                 raise
 
             except Exception as e:

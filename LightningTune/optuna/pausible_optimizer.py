@@ -28,6 +28,7 @@ from lightning import LightningModule
 from lightning.pytorch.callbacks import Callback
 
 from .optimizer import OptunaDrivenOptimizer
+from .callbacks import WandBStopError
 from .factories import create_sampler, create_pruner
 from ..persistence import (
     save_study_to_local as persist_save_study_to_local,
@@ -964,6 +965,50 @@ class PausibleOptunaOptimizer:
                         self.should_pause = True
                         break
                     
+            except WandBStopError:
+                # WandB web stop detected - stop HPO entirely
+                logger.warning("\n🛑 HPO stopped via WandB web interface")
+                self.should_pause = True  # Use pause flag to trigger save logic
+
+                # Clean up keyboard handler
+                if self._use_keyboard_service and self.keyboard_service:
+                    try:
+                        self.keyboard_service.unregister_subscriber("hpo_pause")
+                    except Exception:
+                        pass
+                elif self.keyboard_handler and hasattr(self.keyboard_handler, 'stop_monitoring'):
+                    try:
+                        self.keyboard_handler.stop_monitoring()
+                    except Exception:
+                        pass
+
+                # Save study before exiting
+                if self.local_checkpoint_dir:
+                    persist_save_study_to_local(
+                        self.local_checkpoint_dir,
+                        study,
+                        self.total_trials_completed,
+                        sampler_name=self.sampler_name,
+                        pruner_name=self.pruner_name,
+                        study_name=self.study_name,
+                        config_overrides=self.persistent_config_overrides,
+                        last_wandb_upload_trial_count=self._last_wandb_upload_trial_count,
+                    )
+                if self.wandb_project:
+                    persist_save_study_to_wandb(
+                        self.wandb_project,
+                        study_name=self.study_name,
+                        study=study,
+                        total_trials_completed=self.total_trials_completed,
+                        sampler_name=self.sampler_name,
+                        pruner_name=self.pruner_name,
+                        config_overrides=self.persistent_config_overrides,
+                    )
+
+                logger.info(f"💾 Study saved with {self.total_trials_completed} trials")
+                logger.info("   HPO has been stopped. To resume, use --resume-from latest")
+                break  # Exit the trial loop
+
             except KeyboardInterrupt:
                 # Clean up keyboard handler before terminating
                 if self._use_keyboard_service and self.keyboard_service:
@@ -980,7 +1025,7 @@ class PausibleOptunaOptimizer:
                 logger.info("\n❌ Optimization terminated by user (Ctrl+C)")
                 # Ensure the KeyboardInterrupt propagates all the way out
                 raise
-                
+
             except Exception as e:
                 logger.error(f"Error during trial: {e}")
                 
