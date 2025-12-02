@@ -869,21 +869,10 @@ class PausibleOptunaOptimizer:
                         # This happens when there are no COMPLETE trials (only PRUNED)
                         pass  # Skip logging if no successful trials yet
 
-                    # Always mirror local checkpoint if configured
-                    local_save_success = False
-                    if self.local_checkpoint_dir:
-                        local_save_success = persist_save_study_to_local(
-                            self.local_checkpoint_dir,
-                            study,
-                            self.total_trials_completed,
-                            sampler_name=self.sampler_name,
-                            pruner_name=self.pruner_name,
-                            study_name=self.study_name,
-                            config_overrides=self.persistent_config_overrides,
-                            last_wandb_upload_trial_count=self._last_wandb_upload_trial_count,
-                        )
-
                     # Periodic WandB upload (when save_every_n_trials is reached)
+                    # NOTE: WandB upload and counter update must happen BEFORE local save
+                    # so that the local checkpoint has the correct last_wandb_upload_trial_count.
+                    # This is critical for restart_every_trial=True to avoid re-uploading.
                     wandb_save_succeeded = False
                     if trials_in_batch >= self.save_every_n_trials:
                         # Try WandB save if configured
@@ -906,6 +895,22 @@ class PausibleOptunaOptimizer:
                         if wandb_save_succeeded or not self.wandb_project:
                             self._last_wandb_upload_trial_count = self.total_trials_completed
                             trials_in_batch = 0
+
+                    # Always mirror local checkpoint if configured
+                    # NOTE: This must happen AFTER WandB upload so the checkpoint has
+                    # the updated last_wandb_upload_trial_count value.
+                    local_save_success = False
+                    if self.local_checkpoint_dir:
+                        local_save_success = persist_save_study_to_local(
+                            self.local_checkpoint_dir,
+                            study,
+                            self.total_trials_completed,
+                            sampler_name=self.sampler_name,
+                            pruner_name=self.pruner_name,
+                            study_name=self.study_name,
+                            config_overrides=self.persistent_config_overrides,
+                            last_wandb_upload_trial_count=self._last_wandb_upload_trial_count,
+                        )
 
                     # Check for pause or quit request BEFORE restart logic
                     # This ensures 'p' works even with restart_every_trial=True
