@@ -547,13 +547,14 @@ class HPORunner:
         env = os.environ.copy()
         env["LIGHTNING_TUNE_NO_AUTO_RESTART"] = "1"
 
-        logger.info("="*60)
-        logger.info("🔄 HPO Auto-Restart Mode")
-        logger.info("="*60)
-        logger.info("This will automatically restart the process after each save")
-        logger.info("for complete resource cleanup (GPU memory, DataLoaders, etc.)")
-        logger.info("Press Ctrl+C to stop gracefully")
-        logger.info("="*60)
+        # Use print for immediate output (logger may not be configured yet)
+        print("="*60, flush=True)
+        print("🔄 HPO Auto-Restart Mode", flush=True)
+        print("="*60, flush=True)
+        print("This will automatically restart the process after each save", flush=True)
+        print("for complete resource cleanup (GPU memory, DataLoaders, etc.)", flush=True)
+        print("Press Ctrl+C to stop gracefully", flush=True)
+        print("="*60, flush=True)
 
         try:
             while restart_count < max_restarts:
@@ -581,11 +582,12 @@ class HPORunner:
                     # an older WandB checkpoint instead of the fresh local checkpoint
                     cmd = cleaned_cmd + ["--resume-from", "local"]
 
-                    logger.info(f"\n{'='*60}")
-                    logger.info(f"🔄 Restart #{restart_count}: Resuming from local checkpoint")
-                    logger.info(f"{'='*60}\n")
+                    # Use print for immediate output (logger may not be configured yet)
+                    print(f"\n{'='*60}", flush=True)
+                    print(f"🔄 Restart #{restart_count}: Resuming from local checkpoint", flush=True)
+                    print(f"{'='*60}\n", flush=True)
                 else:
-                    logger.info(f"\n🚀 Starting initial HPO run\n")
+                    print(f"\n🚀 Starting initial HPO run\n", flush=True)
 
                 # Run subprocess with generous timeout (24 hours)
                 # Note: subprocess.run() without capture_output=True inherits parent's
@@ -898,6 +900,14 @@ class HPORunner:
                 # This happens BEFORE merge, so callbacks won't be instantiated
                 self.config_overrides["trainer.callbacks"] = []
                 print("   ✅ Disabled all callbacks for fast testing", flush=True)
+                # Reduce data loading overhead (num_workers spawns processes)
+                self.config_overrides["data.init_args.num_workers"] = 0
+                self.config_overrides["data.init_args.prefetch_factor"] = None
+                self.config_overrides["data.init_args.persistent_workers"] = False
+                print("   ✅ Disabled data loader workers for fast testing", flush=True)
+                # Limit sample buffer to 64MB (still tests buffer code path, but loads fast)
+                self.config_overrides["data.init_args.buffer.memory_budget_gb"] = 0.064
+                print("   ✅ Limited sample buffer to 64MB for fast testing", flush=True)
         except Exception as e:
             print(f"⚠️  Error in FAST_HPO_TESTS config: {e}", flush=True)
             import traceback
