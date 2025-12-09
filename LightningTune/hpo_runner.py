@@ -905,9 +905,9 @@ class HPORunner:
                 self.config_overrides["data.init_args.prefetch_factor"] = None
                 self.config_overrides["data.init_args.persistent_workers"] = False
                 print("   ✅ Disabled data loader workers for fast testing", flush=True)
-                # Limit sample buffer to 64MB (still tests buffer code path, but loads fast)
-                self.config_overrides["data.init_args.buffer.memory_budget_gb"] = 0.064
-                print("   ✅ Limited sample buffer to 64MB for fast testing", flush=True)
+                # Reduce batch size to avoid OOM with large random hyperparameters
+                self.config_overrides["data.init_args.batch_size"] = 4
+                print("   ✅ Reduced batch size to 4 for fast testing", flush=True)
         except Exception as e:
             print(f"⚠️  Error in FAST_HPO_TESTS config: {e}", flush=True)
             import traceback
