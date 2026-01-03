@@ -45,6 +45,14 @@ from .factories import (
     get_pruner_info,
 )
 
+# Trial executor
+from .trial_executor import (
+    TrialExecutor,
+    TrialExecutorConfig,
+    TrialExecutorState,
+    SimpleTrialExecutor,
+)
+
 # Import Optuna components for convenience
 from optuna.samplers import (
     TPESampler,
@@ -63,6 +71,11 @@ __all__ = [
     # Core optimizer
     "OptunaDrivenOptimizer",
     "ReflowOptunaDrivenOptimizer",
+    # Trial executor
+    "TrialExecutor",
+    "TrialExecutorConfig",
+    "TrialExecutorState",
+    "SimpleTrialExecutor",
     # Search spaces
     "OptunaSearchSpace",
     "SimpleSearchSpace",

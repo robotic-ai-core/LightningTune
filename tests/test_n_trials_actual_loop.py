@@ -7,15 +7,20 @@ import pytest
 import optuna
 from unittest.mock import patch, MagicMock
 
+# Mark all tests in this module as slow integration tests
+pytestmark = pytest.mark.timeout(60)
+
 
 class TestActualTrialExecution:
     """Test actual trial execution count."""
 
-    def test_100_trials_with_save_every_3(self):
+    @pytest.mark.timeout(30)
+    def test_many_trials_with_save_every_3(self):
         """
-        Reproduce the bug: n_trials=100, save_every=3 should run 100 trials.
+        Reproduce the bug: n_trials > save_every should run all trials, not just save_every.
 
         Bug report: User ran with --n-trials 100 but only 3 trials executed.
+        Test uses n_trials=15 to keep test fast while verifying save_every doesn't limit trials.
         """
         from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
 
@@ -41,13 +46,13 @@ class TestActualTrialExecution:
             mock_instance.create_objective.return_value = simple_objective
             MockOpt.return_value = mock_instance
 
-            # Run with n_trials=100
-            study = optimizer.optimize(n_trials=100)
+            # Run with n_trials=15 (5x save_every, verifies save_every doesn't limit trials)
+            study = optimizer.optimize(n_trials=15)
 
-            # THE KEY ASSERTION
-            assert trial_count[0] == 100, \
-                f"BUG REPRODUCED: Expected 100 trials but only {trial_count[0]} ran!"
-            assert optimizer.total_trials_completed == 100
+            # THE KEY ASSERTION: all 15 trials run, not just 3
+            assert trial_count[0] == 15, \
+                f"BUG REPRODUCED: Expected 15 trials but only {trial_count[0]} ran!"
+            assert optimizer.total_trials_completed == 15
 
     def test_10_trials_basic(self):
         """Basic test: 10 trials should run 10 times."""
@@ -133,14 +138,15 @@ class TestActualTrialExecution:
                 mock_instance.create_objective.return_value = simple_objective
                 MockOpt.return_value = mock_instance
 
-                study = optimizer.optimize(n_trials=100)
+                # Run with 15 trials to keep test fast while verifying wandb scenario
+                study = optimizer.optimize(n_trials=15)
 
-                assert trial_count[0] == 100, \
-                    f"With wandb_project set: Expected 100 trials, got {trial_count[0]}"
+                assert trial_count[0] == 15, \
+                    f"With wandb_project set: Expected 15 trials, got {trial_count[0]}"
 
 
-    def test_hpo_runner_e2e_100_trials(self):
-        """End-to-end test: HPORunner with n_trials=100 should run 100 trials."""
+    def test_hpo_runner_e2e_many_trials(self):
+        """End-to-end test: HPORunner n_trials should run all trials, not just save_every."""
         from LightningTune.hpo_runner import HPORunner
         from lightning.pytorch import LightningModule
 
@@ -181,22 +187,22 @@ class TestActualTrialExecution:
 
                 MockPausible.side_effect = create_real_optimizer
 
-                # Run with exact user command args
-                argv = ['--n-trials', '100', '--wandb', 'test_project', '--save-every', '3',
+                # Run with n_trials=15 (5x save_every), verifying save_every doesn't limit trials
+                argv = ['--n-trials', '15', '--wandb', 'test_project', '--save-every', '3',
                         '--test-mode', '--no-reflow']
 
                 with patch('LightningTune.optuna.pausible_optimizer.persist_save_study_to_wandb') as mock_save:
                     mock_save.return_value = True
                     study = runner.run_from_cli(argv=argv)
 
-                # THE KEY ASSERTION
-                assert trial_count[0] == 100, \
-                    f"HPORunner E2E: Expected 100 trials but only {trial_count[0]} ran!"
+                # THE KEY ASSERTION: all 15 trials run, not just 3
+                assert trial_count[0] == 15, \
+                    f"HPORunner E2E: Expected 15 trials but only {trial_count[0]} ran!"
 
-    def test_exact_user_scenario(self):
+    def test_user_scenario_save_intervals(self):
         """
-        Exact reproduction of user's scenario:
-        python scripts/world_model_hpo.py --n-trials 100 --wandb pusht_hpo_l1_prenorm --trial-steps 40000
+        Test user scenario: verify n_trials runs all trials and saves at correct intervals.
+        Uses n_trials=15 (5x save_every=3) to keep test fast while verifying behavior.
         """
         from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
 
@@ -206,7 +212,7 @@ class TestActualTrialExecution:
             trial_count[0] += 1
             return trial_count[0] * 0.001
 
-        # Exact user scenario: wandb project set, save_every=3 (default)
+        # User scenario: wandb project set, save_every=3 (default)
         optimizer = PausibleOptunaOptimizer(
             base_config={},
             search_space=lambda trial: {},
@@ -227,20 +233,18 @@ class TestActualTrialExecution:
                     mock_instance.create_objective.return_value = simple_objective
                     MockOpt.return_value = mock_instance
 
-                    # Run with n_trials=100
-                    study = optimizer.optimize(n_trials=100)
+                    # Run with n_trials=15 (5x save_every=3)
+                    study = optimizer.optimize(n_trials=15)
 
-                    # Verify all 100 trials ran
-                    assert trial_count[0] == 100, \
-                        f"User scenario: Expected 100 trials but only {trial_count[0]} ran!"
-                    assert optimizer.total_trials_completed == 100
+                    # Verify all 15 trials ran (not just 3)
+                    assert trial_count[0] == 15, \
+                        f"User scenario: Expected 15 trials but only {trial_count[0]} ran!"
+                    assert optimizer.total_trials_completed == 15
 
                     # Verify saves happened at correct intervals (every 3 trials)
-                    # With 100 trials and save_every=3, we expect:
-                    # - 33 periodic saves (at trials 3, 6, ..., 99)
-                    # - 1 final save after trial 100 completes (since 100 > 99)
-                    # Total: 33-34 saves depending on whether final save is triggered
-                    expected_periodic_saves = 100 // 3
+                    # With 15 trials and save_every=3, we expect:
+                    # - 5 periodic saves (at trials 3, 6, 9, 12, 15)
+                    expected_periodic_saves = 15 // 3
                     assert mock_save.call_count >= expected_periodic_saves, \
                         f"Expected at least {expected_periodic_saves} WandB saves, got {mock_save.call_count}"
                     assert mock_save.call_count <= expected_periodic_saves + 1, \
@@ -294,13 +298,13 @@ class TestActualTrialExecution:
                     mock_opt_instance.create_objective.return_value = simple_objective
                     MockOpt.return_value = mock_opt_instance
 
-                    # Run with n_trials=100
-                    study = optimizer.optimize(n_trials=100)
+                    # Run with n_trials=15 to keep test fast
+                    study = optimizer.optimize(n_trials=15)
 
-                    # Verify all 100 trials ran
-                    assert trial_count[0] == 100, \
-                        f"Expected 100 trials but only {trial_count[0]} ran!"
-                    assert optimizer.total_trials_completed == 100
+                    # Verify all 15 trials ran
+                    assert trial_count[0] == 15, \
+                        f"Expected 15 trials but only {trial_count[0]} ran!"
+                    assert optimizer.total_trials_completed == 15
 
                     # Verify OptunaDrivenOptimizer was used
                     assert MockOpt.called, "OptunaDrivenOptimizer should be used"

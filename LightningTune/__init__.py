@@ -23,6 +23,69 @@ except ImportError as e:
     PausibleOptunaOptimizer = None
     HPORunner = None
 
+# Configuration dataclasses
+try:
+    from .config import (
+        HPOConfig,
+        HPOPersistenceConfig,
+        HPOPauseConfig,
+        HPOSamplerConfig,
+        HPOPrunerConfig,
+        HPOTrialConfig,
+    )
+except ImportError:
+    HPOConfig = None
+    HPOPersistenceConfig = None
+    HPOPauseConfig = None
+    HPOSamplerConfig = None
+    HPOPrunerConfig = None
+    HPOTrialConfig = None
+
+# Persistence classes
+try:
+    from .persistence import (
+        StudyPersistence,
+        StudyMetadata,
+        BasePersistence,
+        LocalPersistence,
+        WandBPersistence,
+        CompositePersistence,
+    )
+except ImportError:
+    StudyPersistence = None
+    StudyMetadata = None
+    BasePersistence = None
+    LocalPersistence = None
+    WandBPersistence = None
+    CompositePersistence = None
+
+# Resume management
+try:
+    from .resume import ResumeManager, create_resume_manager_from_args
+except ImportError:
+    ResumeManager = None
+    create_resume_manager_from_args = None
+
+# Input handling
+try:
+    from .input import HPOKeyboardHandler
+except ImportError:
+    HPOKeyboardHandler = None
+
+# Trial execution
+try:
+    from .optuna.trial_executor import (
+        TrialExecutor,
+        TrialExecutorConfig,
+        TrialExecutorState,
+        SimpleTrialExecutor,
+    )
+except ImportError:
+    TrialExecutor = None
+    TrialExecutorConfig = None
+    TrialExecutorState = None
+    SimpleTrialExecutor = None
+
 # Optuna components
 try:
     from .optuna.wandb_integration import WandBOptunaOptimizer
@@ -83,7 +146,7 @@ except ImportError as e:
     get_sampler_info = None
     get_pruner_info = None
 
-__version__ = "0.4.0"  # Bumped version for major refactor
+__version__ = "0.5.0"  # Bumped version for architectural refactor
 
 __all__ = [
     # Main interface
@@ -92,32 +155,61 @@ __all__ = [
     "PausibleOptunaOptimizer",
     "HPORunner",
     "WandBOptunaOptimizer",
-    
+
+    # Configuration dataclasses
+    "HPOConfig",
+    "HPOPersistenceConfig",
+    "HPOPauseConfig",
+    "HPOSamplerConfig",
+    "HPOPrunerConfig",
+    "HPOTrialConfig",
+
+    # Persistence
+    "StudyPersistence",
+    "StudyMetadata",
+    "BasePersistence",
+    "LocalPersistence",
+    "WandBPersistence",
+    "CompositePersistence",
+
+    # Resume management
+    "ResumeManager",
+    "create_resume_manager_from_args",
+
+    # Input handling
+    "HPOKeyboardHandler",
+
+    # Trial execution
+    "TrialExecutor",
+    "TrialExecutorConfig",
+    "TrialExecutorState",
+    "SimpleTrialExecutor",
+
     # Search spaces
     "OptunaSearchSpace",
     "SimpleSearchSpace",
     "ConditionalSearchSpace",
     "CompositeSearchSpace",
     "DynamicSearchSpace",
-    
+
     # Callbacks
     "OptunaPruningCallback",
     "OptunaCheckpointCallback",
     "OptunaProgressCallback",
     "OptunaEarlyStoppingCallback",
-    
+
     # Factory functions
     "create_sampler",
     "create_pruner",
     "get_sampler_info",
     "get_pruner_info",
-    
+
     # Optuna Samplers (actual Optuna components)
     "TPESampler",
     "RandomSampler",
     "GridSampler",
     "CmaEsSampler",
-    
+
     # Optuna Pruners (actual Optuna components)
     "MedianPruner",
     "HyperbandPruner",

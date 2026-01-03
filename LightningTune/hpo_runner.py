@@ -873,7 +873,9 @@ class HPORunner:
             # Base trainer behavior during HPO
             self.config_overrides["trainer.check_val_every_n_epoch"] = None
             self.config_overrides["trainer.enable_model_summary"] = False
-            self.config_overrides["trainer.enable_progress_bar"] = True
+            # Disable Lightning's default progress bar - LightningReflow provides FlowProgressBarCallback
+            # which gives a cleaner display with dual progress bars (global + interval to validation)
+            self.config_overrides["trainer.enable_progress_bar"] = False
             # Validation interval (steps)
             if getattr(self.args, 'val_interval', None) is not None:
                 self.config_overrides["trainer.val_check_interval"] = self.args.val_interval
@@ -990,9 +992,11 @@ class HPORunner:
 
         # Resolve pause settings from CLI args
         # CLI args override __init__ parameters
+        # Note: With action='store_true', args.enable_pause is False when not provided,
+        # so we only override the default if it's explicitly True
         final_enable_pause = self.enable_pause  # Default from __init__
-        if hasattr(self.args, 'enable_pause') and self.args.enable_pause is not None:
-            final_enable_pause = self.args.enable_pause
+        if hasattr(self.args, 'enable_pause') and self.args.enable_pause:
+            final_enable_pause = True
         if hasattr(self.args, 'disable_pause') and self.args.disable_pause:
             final_enable_pause = False
 
@@ -1000,22 +1004,12 @@ class HPORunner:
         if hasattr(self.args, 'pause_key') and self.args.pause_key is not None:
             final_pause_key = self.args.pause_key
 
-        # Note: We do NOT add PauseCallback during HPO runs
-        # HPO uses PausibleOptunaOptimizer which implements trial-boundary pause
-        # (pauses AFTER completing a trial, not during training at validation boundaries)
-        # Adding PauseCallback here would cause validation-boundary pauses which:
-        #   - Interrupt trials mid-training (corrupts trial metrics)
-        #   - Prevents fair trial comparison in Optuna
-        #   - Wastes GPU time on incomplete trials
-        # For single training runs (not HPO), use train_world_model.py which includes PauseCallback
-
+        # HPO uses trial-boundary pause: press 'p' to pause after the current trial completes.
+        # Validation-boundary pause is disabled to avoid complex mid-trial resume logic.
         if final_enable_pause:
-            logger.info(f"⏸️  HPO pause enabled: press '{final_pause_key}' to pause at TRIAL boundary")
-            logger.info(f"   (Trials will complete before pausing - controlled by PausibleOptunaOptimizer)")
-            if self.args.wandb:
-                logger.info(f"   💾 Checkpoints: WandB (cloud) + local backup")
-            else:
-                logger.info(f"   💾 Checkpoints: local only (add --wandb <project> for cloud storage)")
+            logger.info(f"⏸️  HPO pause enabled: press '{final_pause_key}' to pause at trial boundary")
+            storage = "WandB + local" if self.args.wandb else "local only"
+            logger.info(f"   (Study state saved to {storage} for resume)")
         else:
             logger.info("⏸️  HPO pause disabled")
 

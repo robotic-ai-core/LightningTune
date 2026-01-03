@@ -417,23 +417,8 @@ class OptunaDrivenOptimizer:
             except ImportError:
                 pass
 
-        # Extract and instantiate callbacks from config
-        trainer_config = config.get('trainer', {})
-        config_callbacks = trainer_config.get('callbacks', [])
-        if config_callbacks:
-            for cb_config in config_callbacks:
-                if isinstance(cb_config, dict) and 'class_path' in cb_config:
-                    try:
-                        cb = self._instantiate_callback(cb_config)
-                        # Filter out callbacks that conflict with HPO
-                        from lightning.pytorch.callbacks import ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar
-                        if not isinstance(cb, (ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar)):
-                            callbacks.append(cb)
-                    except Exception as e:
-                        logger.warning(f"Failed to instantiate callback from config: {e}")
-                elif not isinstance(cb_config, dict):
-                    # Already instantiated callback
-                    callbacks.append(cb_config)
+        # Extract and instantiate callbacks from config, filtering out HPO-incompatible ones
+        callbacks.extend(self._load_config_callbacks(config))
 
         # Add checkpoint callback if checkpointing is enabled
         if self.checkpoint_manager.checkpoints_enabled:
@@ -458,6 +443,18 @@ class OptunaDrivenOptimizer:
         if self.wandb_project:
             callbacks.append(WandBStopDetectionCallback(stop_hpo_on_wandb_stop=True))
 
+        # Add FlowProgressBarCallback for cleaner display (without PauseCallback's validation-boundary pause)
+        # PauseCallback inherits from FlowProgressBarCallback, so filtering PauseCallback loses progress bar
+        try:
+            from lightning_reflow.callbacks.monitoring import FlowProgressBarCallback
+            # Check if we already have a FlowProgressBarCallback
+            has_flow_progress = any(isinstance(cb, FlowProgressBarCallback) for cb in callbacks)
+            if not has_flow_progress:
+                callbacks.append(FlowProgressBarCallback())
+                logger.info("✅ Added FlowProgressBarCallback for HPO progress display")
+        except ImportError:
+            logger.debug("FlowProgressBarCallback not available")
+
         return callbacks
 
     def _instantiate_callback(self, cb_config: Dict[str, Any]) -> Callback:
@@ -469,6 +466,54 @@ class OptunaDrivenOptimizer:
         cls = getattr(module, class_name)
         init_args = cb_config.get('init_args', {})
         return cls(**init_args)
+
+    def _get_hpo_excluded_callback_types(self) -> tuple:
+        """
+        Get callback types that should be filtered out during HPO.
+
+        HPO manages its own checkpointing and progress bar, and uses trial-boundary
+        pause instead of validation-boundary pause.
+        """
+        from lightning.pytorch.callbacks import ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar
+        excluded = (ModelCheckpoint, ProgressBar, RichProgressBar, TQDMProgressBar)
+
+        # Also filter PauseCallback - HPO uses trial-boundary pause only
+        try:
+            from lightning_reflow.callbacks.pause import PauseCallback, EarlyPauseCallback
+            excluded = excluded + (PauseCallback, EarlyPauseCallback)
+        except ImportError:
+            pass
+
+        return excluded
+
+    def _load_config_callbacks(self, config: Dict[str, Any]) -> List[Callback]:
+        """
+        Load callbacks from config, filtering out HPO-incompatible ones.
+
+        This filters out:
+        - ModelCheckpoint (HPO manages its own)
+        - Progress bars (FlowProgressBarCallback is added separately)
+        - PauseCallback/EarlyPauseCallback (HPO uses trial-boundary pause)
+        """
+        callbacks = []
+        excluded_types = self._get_hpo_excluded_callback_types()
+
+        trainer_config = config.get('trainer', {})
+        config_callbacks = trainer_config.get('callbacks', [])
+
+        for cb_config in config_callbacks:
+            if isinstance(cb_config, dict) and 'class_path' in cb_config:
+                try:
+                    cb = self._instantiate_callback(cb_config)
+                    if not isinstance(cb, excluded_types):
+                        callbacks.append(cb)
+                except Exception as e:
+                    logger.warning(f"Failed to instantiate callback from config: {e}")
+            elif not isinstance(cb_config, dict):
+                # Already instantiated callback
+                callbacks.append(cb_config)
+
+        return callbacks
 
     def _prepare_trainer_config(self, config: Dict[str, Any], wandb_logger) -> Dict[str, Any]:
         """
@@ -570,19 +615,11 @@ class OptunaDrivenOptimizer:
                         'compile': config.get('compile', {})
                     },
                     auto_configure_logging=False,
-                    disable_pause_callback=True  # HPO manages pause at trial boundaries
+                    # Disable PauseCallback for HPO - we only want trial-boundary pause
+                    # Validation-boundary pause would complicate resume logic
+                    # FlowProgressBarCallback is still used for cleaner display
+                    disable_pause_callback=True
                 )
-
-                # Remove PauseCallback if it was added despite disable_pause_callback
-                try:
-                    from lightning_reflow.callbacks.pause import PauseCallback
-                    if hasattr(reflow, 'callbacks') and reflow.callbacks:
-                        reflow.callbacks = [
-                            cb for cb in reflow.callbacks
-                            if not isinstance(cb, PauseCallback)
-                        ]
-                except ImportError:
-                    pass
 
                 # Run training
                 reflow.fit()

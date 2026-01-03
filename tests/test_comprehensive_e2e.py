@@ -18,9 +18,12 @@ import time
 import tempfile
 import shutil
 import threading
+import pytest
+
+# Mark all tests in this module as slow integration tests
+pytestmark = pytest.mark.timeout(120)
 from pathlib import Path
 from unittest.mock import MagicMock, patch, Mock
-import pytest
 
 # Add LightningTune root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

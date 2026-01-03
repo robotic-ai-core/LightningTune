@@ -12,6 +12,9 @@ import pytest
 import optuna
 import tempfile
 
+# Mark all tests in this module as slow integration tests
+pytestmark = pytest.mark.timeout(60)
+
 # Add LightningTune root to path
 lightningtune_root = Path(__file__).parent.parent
 sys.path.insert(0, str(lightningtune_root))

@@ -10,6 +10,9 @@ from unittest.mock import Mock, patch, MagicMock
 import optuna
 from argparse import Namespace
 
+# Mark all tests in this module as slow integration tests
+pytestmark = pytest.mark.timeout(60)
+
 
 class TestNTrialsFlow:
     """Test n_trials value flow from CLI to optimization loop."""
@@ -174,8 +177,8 @@ class TestNTrialsFlow:
             assert trial_count[0] == 10, f"Expected 10 trials, got {trial_count[0]}"
             assert optimizer.total_trials_completed == 10
 
-    def test_n_trials_100_with_save_every_3(self):
-        """Test that n_trials=100 with save_every=3 runs all 100 trials."""
+    def test_n_trials_exceeds_save_every(self):
+        """Test that n_trials > save_every runs all trials, not just save_every count."""
         from LightningTune.optuna.pausible_optimizer import PausibleOptunaOptimizer
 
         trial_count = [0]
@@ -197,14 +200,14 @@ class TestNTrialsFlow:
             mock_instance.create_objective.return_value = counting_objective
             MockOpt.return_value = mock_instance
 
-            # Run with n_trials=100
-            study = optimizer.optimize(n_trials=100)
+            # Run with n_trials=15 (5x save_every=3), verifying save_every doesn't limit trials
+            study = optimizer.optimize(n_trials=15)
 
-            # Should have run all 100 trials
-            assert trial_count[0] == 100, \
-                f"Expected 100 trials but only {trial_count[0]} ran. " \
+            # Should have run all 15 trials, not just 3
+            assert trial_count[0] == 15, \
+                f"Expected 15 trials but only {trial_count[0]} ran. " \
                 f"Bug: save_every_n_trials (3) may be confused with n_trials."
-            assert optimizer.total_trials_completed == 100
+            assert optimizer.total_trials_completed == 15
 
     def test_fresh_start_n_trials_not_from_checkpoint(self):
         """Test that fresh start uses CLI n_trials, not some cached value."""

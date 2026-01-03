@@ -45,20 +45,25 @@ from ..arg_persistence import (
     normalize_n_trials_in_overrides,
     extend_or_align_n_trials,
 )
+# Ensure Reflow package is importable when used as a submodule
+reflow_path = Path(__file__).parent.parent.parent.parent / "LightningReflow"
+if reflow_path.exists():
+    sys.path.insert(0, str(reflow_path))
+
+# Import keyboard handlers - these are separate try blocks so one failure doesn't affect the other
 try:
-    # Ensure Reflow package is importable when used as a submodule
-    reflow_path = Path(__file__).parent.parent.parent.parent / "LightningReflow"
-    if reflow_path.exists():
-        sys.path.insert(0, str(reflow_path))
     # Prefer Reflow's robust keyboard handler to improve TTY restore and Ctrl+C behavior
     from lightning_reflow.callbacks.pause.improved_keyboard_handler import (
         create_improved_keyboard_handler,
     )
+except Exception:
+    create_improved_keyboard_handler = None  # type: ignore
+
+try:
     # Import KeyboardHandlerService (modern approach, eliminates duplicate threads)
     from lightning_reflow.services import KeyboardHandlerService, KeyboardHandlerStrategy
     HAS_KEYBOARD_SERVICE = True
-except Exception:  # Fallback if Reflow is not available
-    create_improved_keyboard_handler = None  # type: ignore
+except Exception:
     KeyboardHandlerService = None  # type: ignore
     KeyboardHandlerStrategy = None  # type: ignore
     HAS_KEYBOARD_SERVICE = False
@@ -252,14 +257,14 @@ class PausibleOptunaOptimizer:
                     else:
                         # Fallback to ImprovedKeyboardHandler
                         if create_improved_keyboard_handler is not None:
-                            self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
+                            self.keyboard_handler = create_improved_keyboard_handler()
                             logger.warning("⚠️  Falling back to ImprovedKeyboardHandler (KeyboardHandlerService not available)")
                 except Exception as e:
                     logger.warning(f"KeyboardHandlerService failed ({e}), falling back to ImprovedKeyboardHandler")
                     if create_improved_keyboard_handler is not None:
-                        self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
+                        self.keyboard_handler = create_improved_keyboard_handler()
             elif create_improved_keyboard_handler is not None:
-                self.keyboard_handler = create_improved_keyboard_handler(test_mode=test_mode)
+                self.keyboard_handler = create_improved_keyboard_handler()
                 logger.warning("⚠️  KeyboardHandlerService not available, using ImprovedKeyboardHandler")
             else:
                 self.keyboard_handler = None
