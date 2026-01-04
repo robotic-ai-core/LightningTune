@@ -801,6 +801,9 @@ class PausibleOptunaOptimizer:
         logger.debug(f"Starting optimization loop: total_trials_completed={self.total_trials_completed}, n_trials={n_trials}")
         logger.debug(f"Study has {len(study.trials)} trials, next trial will be number {len(study.trials)}")
 
+        # Print resume command for easy copy-paste if HPO crashes
+        self._print_resume_command()
+
         while self.total_trials_completed < n_trials and not self.should_pause:
             # Record number of finished trials (COMPLETE + PRUNED) before this trial
             trials_before = len([t for t in study.trials 
@@ -1369,6 +1372,42 @@ class PausibleOptunaOptimizer:
 
             config_key = f"args.{arg_name}"
             self.persistent_config_overrides[config_key] = arg_value
+
+    def _print_resume_command(self) -> None:
+        """Print resume command for easy copy-paste if HPO crashes.
+
+        This is printed after WandB initialization so it appears in WandB logs.
+        """
+        if not self.local_checkpoint_dir:
+            return
+
+        import sys
+
+        # Get script name from sys.argv
+        script = sys.argv[0] if sys.argv else "python scripts/world_model_hpo.py"
+
+        # Build study path
+        study_path = self.local_checkpoint_dir / "study.pkl"
+
+        # Build command parts
+        cmd_parts = [f"python {script}"]
+
+        # Add config if available
+        config = self.persistent_config_overrides.get("args.config")
+        if config:
+            cmd_parts.append(f"--config {config}")
+
+        # Add resume-from
+        cmd_parts.append(f"--resume-from {study_path}")
+
+        # Format as multi-line command for readability
+        resume_cmd = " \\\n    ".join(cmd_parts)
+
+        logger.info("=" * 60)
+        logger.info("📋 RESUME COMMAND (copy if HPO crashes):")
+        logger.info("-" * 60)
+        logger.info(f"\n  {resume_cmd}\n")
+        logger.info("=" * 60)
 
     def save_study_to_local(self, study: optuna.Study, total_trials_completed: int) -> bool:
         """Save study to local checkpoint. Delegates to persist_save_study_to_local."""

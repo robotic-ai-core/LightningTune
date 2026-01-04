@@ -217,39 +217,6 @@ class HPORunner:
         else:
             return base_ckpt_dir / str(study_name) / "study.pkl"
 
-    def _print_resume_command(self, checkpoint_dir: Path) -> None:
-        """Print the resume command for easy copy-paste if HPO crashes.
-
-        Args:
-            checkpoint_dir: Directory containing the study.pkl checkpoint
-        """
-        import sys
-
-        # Get the script name from sys.argv[0]
-        script = sys.argv[0] if sys.argv else "python scripts/world_model_hpo.py"
-
-        # Build resume command with essential args
-        study_path = checkpoint_dir / "study.pkl"
-        cmd_parts = [f"python {script}"]
-
-        # Add config if available
-        if self.args and hasattr(self.args, 'config') and self.args.config:
-            cmd_parts.append(f"--config {self.args.config}")
-
-        # Add resume-from
-        cmd_parts.append(f"--resume-from {study_path}")
-
-        # Format as multi-line command for readability
-        resume_cmd = " \\\n    ".join(cmd_parts)
-
-        logger.info("")
-        logger.info("=" * 60)
-        logger.info("📋 RESUME COMMAND (copy if HPO crashes):")
-        logger.info("-" * 60)
-        logger.info(f"\n  {resume_cmd}\n")
-        logger.info("=" * 60)
-        logger.info("")
-
     def _create_parser(self) -> argparse.ArgumentParser:
         """Create argument parser with all defined CLI arguments."""
         parser = argparse.ArgumentParser(
@@ -1053,10 +1020,6 @@ class HPORunner:
             _local_ckpt_dir = self._get_local_checkpoint_path().parent
         except Exception:
             _local_ckpt_dir = None
-
-        # Print resume command for easy copy-paste if HPO crashes
-        if _local_ckpt_dir is not None:
-            self._print_resume_command(_local_ckpt_dir)
 
         optimizer = PausibleOptunaOptimizer(
             base_config=final_config,
