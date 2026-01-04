@@ -529,6 +529,8 @@ def save_study_to_local(
         # Derive n_trials and isolate_trials with sensible defaults for resume UX
         saved_args = config_overrides or {}
         session_args = {
+            "config": saved_args.get("args.config", None),
+            "trial_steps": saved_args.get("args.trial_steps", None),
             "n_trials": saved_args.get("args.n_trials", None),
             "save_every": saved_args.get("args.save_every", None),
             "isolate_trials": saved_args.get("args.isolate_trials", True),
