@@ -737,6 +737,19 @@ class PausibleOptunaOptimizer:
                 objective = under.create_objective()
         except Exception:
             objective = optimizer.create_objective()
+
+        # Wrap objective to print resume command on first trial (when WandB is capturing)
+        _first_trial_done = [False]  # Use list to allow modification in closure
+        _original_objective = objective
+
+        def _objective_with_resume_print(trial):
+            if not _first_trial_done[0]:
+                _first_trial_done[0] = True
+                # Print resume command now that WandB is capturing stdout
+                self._print_resume_command()
+            return _original_objective(trial)
+
+        objective = _objective_with_resume_print
         
         # Start keyboard monitoring if available
         if self._use_keyboard_service and self.keyboard_service:
@@ -802,6 +815,8 @@ class PausibleOptunaOptimizer:
         logger.debug(f"Study has {len(study.trials)} trials, next trial will be number {len(study.trials)}")
 
         # Print resume command for easy copy-paste if HPO crashes
+        # Note: This prints to console before WandB starts. The objective wrapper
+        # also prints it inside the first trial for WandB capture.
         self._print_resume_command()
 
         while self.total_trials_completed < n_trials and not self.should_pause:
@@ -1403,11 +1418,22 @@ class PausibleOptunaOptimizer:
         # Format as multi-line command for readability
         resume_cmd = " \\\n    ".join(cmd_parts)
 
+        # Use both logger AND print to ensure visibility in WandB console logs
+        # (logger.info may not be captured by WandB, but print to stdout is)
+        import sys
         logger.info("=" * 60)
         logger.info("📋 RESUME COMMAND (copy if HPO crashes):")
         logger.info("-" * 60)
         logger.info(f"\n  {resume_cmd}\n")
         logger.info("=" * 60)
+
+        # Also print to stdout for WandB capture
+        print("=" * 70, flush=True)
+        print("📋 RESUME COMMAND (copy if HPO crashes):", flush=True)
+        print("-" * 70, flush=True)
+        print(f"  {resume_cmd}", flush=True)
+        print("=" * 70, flush=True)
+        sys.stdout.flush()
 
     def save_study_to_local(self, study: optuna.Study, total_trials_completed: int) -> bool:
         """Save study to local checkpoint. Delegates to persist_save_study_to_local."""
