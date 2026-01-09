@@ -8,7 +8,7 @@ import tempfile
 import pytest
 from pathlib import Path
 
-from LightningTune.utils.crash_logger import (
+from LightningTune.utils import (
     CircularBufferHandler,
     CrashResistantLogger,
     TeeLogger,

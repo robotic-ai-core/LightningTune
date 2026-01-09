@@ -548,6 +548,7 @@ class TestExtendingHPOSessions:
         assert "args.n_trials" in session_info["config_overrides"]
         assert session_info["config_overrides"]["args.n_trials"] == 100
 
+    @pytest.mark.timeout(120)  # This test runs 100 trials, needs more time
     def test_extending_hpo_session_with_more_trials(self, tmp_path):
         """Test that users can extend HPO sessions by specifying more n_trials on resume."""
         import pickle

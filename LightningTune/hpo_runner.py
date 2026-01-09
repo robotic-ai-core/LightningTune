@@ -726,7 +726,7 @@ class HPORunner:
 
         # Set up crash-resistant logging if enabled
         if getattr(self.args, 'crash_logging', False):
-            from .utils.crash_logger import setup_crash_resistant_logging
+            from lightning_reflow.utils.debugging import setup_crash_resistant_logging
             self._crash_logger = setup_crash_resistant_logging(
                 log_dir=getattr(self.args, 'crash_log_dir', '/tmp/hpo_crash_logs'),
                 prefix=getattr(self.args, 'study_name', 'hpo') or 'hpo',
@@ -737,7 +737,7 @@ class HPORunner:
 
         # Set up thread monitoring if enabled
         if getattr(self.args, 'thread_monitor', False):
-            from .utils.thread_monitor import ThreadMonitor
+            from lightning_reflow.utils.debugging import ThreadMonitor
             self._thread_monitor = ThreadMonitor(
                 interval=getattr(self.args, 'thread_monitor_interval', 30),
                 warn_threshold=getattr(self.args, 'thread_monitor_threshold', 10),

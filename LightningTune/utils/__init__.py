@@ -15,14 +15,15 @@ from .cli_generation import (
     format_best_trial_results,
 )
 
-from .crash_logger import (
+# Import debugging utilities from lightning_reflow (canonical source)
+from lightning_reflow.utils.debugging import (
     CrashResistantLogger,
     CircularBufferHandler,
     TeeLogger,
     setup_crash_resistant_logging,
+    ThreadMonitor,
+    monitor_threads_for_duration,
 )
-
-from .thread_monitor import ThreadMonitor
 
 __all__ = [
     # Config utilities
@@ -43,4 +44,5 @@ __all__ = [
     "setup_crash_resistant_logging",
     # Thread monitoring
     "ThreadMonitor",
+    "monitor_threads_for_duration",
 ]
