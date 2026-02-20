@@ -159,3 +159,6 @@ lightning_logs/
 *.tmp
 temp/
 tmp/checkpoints/
+
+# Data (datasets should not be in the repo)
+data/
